@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from newsletter_agent import NewsletterAgent
 from email_utils import EmailService, EmailTemplate
+from rss_collector import RSSCollector
 import logging
 from datetime import datetime
 import os
@@ -129,6 +130,85 @@ async def validate_emails(emails: List[str]):
             results["invalid"].append(email)
 
     return results
+
+
+@app.get("/news/rss")
+async def fetch_rss_news():
+    """RSS 피드에서 최신 뉴스 수집"""
+    try:
+        logger.info("RSS 뉴스 수집 시작")
+        collector = RSSCollector()
+        news = collector.fetch_all_news()
+
+        logger.info(f"수집된 뉴스: {len(news)}개")
+        return {
+            "success": True,
+            "count": len(news),
+            "news": news,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"RSS 수집 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"RSS 수집 중 오류: {str(e)}"
+        )
+
+
+@app.post("/newsletter/from-rss")
+async def generate_newsletter_from_rss(request: NewsletterRequest):
+    """RSS 뉴스를 기반으로 뉴스레터 생성"""
+    try:
+        logger.info("RSS 기반 뉴스레터 생성 시작")
+
+        # RSS 뉴스 수집
+        collector = RSSCollector()
+        rss_news = collector.fetch_all_news()
+
+        # 뉴스 요약
+        news_text = "\n".join([
+            f"제목: {n['title']}\n요약: {n['description']}"
+            for n in rss_news[:10]
+        ])
+
+        agent = NewsletterAgent()
+        newsletter = agent.run(f"{request.topic}\n\n최신 뉴스:\n{news_text}")
+
+        # 이메일 발송
+        email_results = None
+        if request.send_email and request.recipients:
+            email_service = EmailService()
+            valid_recipients = [
+                r for r in request.recipients
+                if email_service.validate_email(r)
+            ]
+
+            if valid_recipients:
+                html_content = EmailTemplate.create_newsletter_html(
+                    title=request.topic,
+                    content=newsletter
+                )
+                email_results = email_service.send_newsletter(
+                    recipients=valid_recipients,
+                    subject=f"뉴스레터: {request.topic}",
+                    newsletter_html=html_content
+                )
+                logger.info(f"이메일 발송 완료")
+
+        return NewsletterResponse(
+            success=True,
+            topic=request.topic,
+            newsletter=newsletter,
+            email_results=email_results,
+            timestamp=datetime.now().isoformat()
+        )
+
+    except Exception as e:
+        logger.error(f"RSS 기반 뉴스레터 생성 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"오류: {str(e)}"
+        )
 
 
 if __name__ == "__main__":

@@ -8,12 +8,13 @@ API 층(api_v1.py)은 요청을 받고 이 서비스를 부르기만 한다.
     수정 : 기존 요약 + 수정 요청 -> 다시 작성 -> 다듬기 -> 재검수
     승인 : 상태 변경 + 주기 저장
 
-저장은 지금 메모리에 한다. MySQL 이 준비되면 _store 부분만 바꾸면 된다.
+저장은 store.py 가 맡는다. MySQL 이 준비돼 있으면 MySQL, 아니면 메모리.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -22,6 +23,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from adapters import extract_summary, extract_title, to_research_sources
 from html_render import to_dashboard_html
 from polisher import Polisher
+import store
+from mailer import send_draft
 from rag_engine import DEFAULT_STYLE, STYLE_PROMPTS, NewsRAG
 from request_analyzer import RequestAnalyzer
 from reviewer import NewsletterReviewer
@@ -40,14 +43,19 @@ FREQUENCY_LABEL = {
 REVISE_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
      "당신은 뉴스 큐레이터입니다. 아래 [기존 요약]을 사용자의 [요청]대로 고쳐 쓰세요.\n\n"
-     "지킬 것:\n"
-     "- 아래 [기사]에 있는 내용만 쓴다. 없는 사실을 새로 만들지 않는다.\n"
-     "- **모든 항목 끝에 근거 기사 번호 [1] [2] 를 반드시 붙인다.**\n"
-     "  쉽게 풀어 쓰라는 요청을 받아도 번호는 절대 빼지 않는다.\n"
-     "  번호가 빠지면 검수에서 출처 점수가 0점이 된다.\n"
-     "- 기사 하나당 한 항목으로 쓴다. 뭉뚱그리지 않는다.\n"
-     "- 요청에서 말한 부분을 실제로 바꾼다. 형식만 바꾸고 넘어가지 않는다.\n"
-     "- 마크다운, 한국어.\n\n"
+     "절대 지킬 것:\n"
+     "1. **항목을 {item_count}개 그대로 유지한다.** 하나도 빼지 않는다.\n"
+     "   '쉽게 써 달라', '줄여 달라'는 요청은 각 항목을 쉽게·짧게 쓰라는 뜻이지\n"
+     "   기사를 버리라는 뜻이 아니다.\n"
+     "2. **각 항목의 제목 끝에 근거 번호 [n] 을 붙인다.** 원래 번호를 그대로 쓴다.\n"
+     "   번호가 빠지면 검수에서 출처 점수가 0점이 된다.\n"
+     "3. 아래 [기사]에 있는 내용만 쓴다. 없는 사실을 새로 만들지 않는다.\n"
+     "4. 기사 하나당 한 항목. 여러 기사를 하나로 합치지 않는다.\n"
+     "5. 요청에서 말한 부분을 실제로 바꾼다.\n"
+     "6. 마크다운, 한국어.\n\n"
+     "형식은 이대로 유지한다:\n"
+     "**기사 제목** [n]\n"
+     "설명 문장.\n\n"
      "[기사]\n{context}\n\n"
      "[기존 요약]\n{previous}"),
     ("human", "[요청]\n{direction}"),
@@ -65,8 +73,7 @@ class NewsletterService:
         self._analyzer: Optional[RequestAnalyzer] = None
         self._reviewer: Optional[NewsletterReviewer] = None
         self._polisher: Optional[Polisher] = None
-        # 만들어진 요약본 보관 (MySQL 준비되면 교체)
-        self._store: Dict[str, Dict] = {}
+        # 저장은 store 가 맡는다 (MySQL 이 준비돼 있으면 MySQL, 아니면 메모리)
         self._schedules: Dict[int, Dict] = {}
         self._next_schedule_id = 1
 
@@ -98,13 +105,21 @@ class NewsletterService:
 
     # ---------- 조회 ----------
     def get(self, draft_id: str) -> Optional[Dict]:
-        return self._store.get(draft_id)
+        d = store.get_draft(draft_id)
+        if d and d.get("frequency"):
+            d["frequency_label"] = FREQUENCY_LABEL.get(d["frequency"], d["frequency"])
+        return d
 
     def list_drafts(self, status: str = "all") -> List[Dict]:
-        items = list(self._store.values())
-        if status != "all":
-            items = [d for d in items if d["status"] == status]
-        return sorted(items, key=lambda d: d["id"], reverse=True)
+        items = store.list_drafts(status)
+        for d in items:
+            if d.get("frequency"):
+                d["frequency_label"] = FREQUENCY_LABEL.get(d["frequency"], d["frequency"])
+        return items
+
+    @staticmethod
+    def storage_mode() -> Dict:
+        return store.mode()
 
     # ---------- ① 뉴스레터 요청 ----------
     def create(self, request_text: str) -> Dict:
@@ -140,16 +155,21 @@ class NewsletterService:
     # ---------- ② 수정 요청 ----------
     def revise(self, draft_id: str, direction: str) -> Dict:
         """화면 ②의 '이렇게 바꾸어주세요' 한 칸을 받아 다시 쓴다."""
-        draft = self._store[draft_id]
+        draft = store.get_draft(draft_id)
 
         # 원래 근거 기사를 그대로 다시 쓴다 (검색을 다시 하지 않는다)
         docs = self.rag.search(draft["_query"], k=draft["_article_count"])
         context = self.rag._format_context(docs)
 
+        # 기존 요약에 항목이 몇 개였는지 세어, 그 수를 유지하라고 알려준다.
+        # (쉽게 써 달라는 요청에 모델이 기사를 통째로 버리는 일이 있었다)
+        item_count = len(re.findall(r"^\*\*.+\*\*", draft["markdown"], flags=re.M)) or len(docs)
+
         markdown = (REVISE_PROMPT | self.rag.llm).invoke({
             "context": context,
             "previous": draft["markdown"],
             "direction": direction,
+            "item_count": item_count,
         }).content
 
         markdown = self.polisher.polish(markdown)
@@ -177,7 +197,7 @@ class NewsletterService:
     def approve(self, draft_id: str, frequency: str,
                 recipients: List[str] = None) -> Dict:
         """승인하고 발송 주기를 저장한다."""
-        draft = self._store[draft_id]
+        draft = store.get_draft(draft_id)
         now = datetime.now()
 
         draft["status"] = "approved"
@@ -185,23 +205,41 @@ class NewsletterService:
         draft["frequency"] = frequency
         draft["frequency_label"] = FREQUENCY_LABEL.get(frequency, frequency)
 
+        store.mark_approved(draft_id, frequency)
+
+        # 주기 등록. once 면 반복하지 않는다.
         schedule_id = self._next_schedule_id
         self._next_schedule_id += 1
         self._schedules[schedule_id] = {
             "schedule_id": schedule_id,
             "draft_id": draft_id,
-            "request_text": draft["_request_text"],
+            "request_text": draft.get("_request_text"),
             "frequency": frequency,
             "recipients": recipients or [],
             "is_active": frequency != "once",
             "created_at": now.strftime("%Y.%m.%d %H:%M"),
         }
         draft["schedule_id"] = schedule_id
+
+        # 승인했으니 바로 한 통 보낸다.
+        # MAIL_DRY_RUN=true 면 실제로 나가지 않고 보낼 내용만 알려준다.
+        result = send_draft(draft, to=(recipients or [None])[0])
+        draft["send_result"] = result
+        if result.get("sent"):
+            draft["status"] = "sent"
+            store.mark_sent(draft_id)
+        elif not result.get("dry_run"):
+            store.mark_sent(draft_id, error=result.get("reason"))
+
         return draft
 
+    def schedules(self) -> List[Dict]:
+        return list(self._schedules.values())
+
     def reject(self, draft_id: str) -> Dict:
-        draft = self._store[draft_id]
+        draft = store.get_draft(draft_id)
         draft["status"] = "rejected"
+        store.save_draft(draft)
         return draft
 
     # ---------- 저장 ----------
@@ -237,7 +275,7 @@ class NewsletterService:
             "_article_count": article_count,
             "_last_direction": direction,
         }
-        self._store[draft_id] = draft
+        store.save_draft(draft)
         return draft
 
     @staticmethod

@@ -61,6 +61,28 @@ from rag_api import router as rag_router
 app.include_router(rag_router)
 
 
+# ---------------------------------------------------------------
+# 서버가 뜨고 내려갈 때
+# ---------------------------------------------------------------
+import scheduler as _scheduler
+
+
+@app.on_event("startup")
+def _on_startup():
+    import store
+    m = store.mode()
+    logger.info("저장소: %s - %s", m["mode"], m["note"])
+    if os.getenv("SCHEDULER_ENABLED", "true").lower() != "false":
+        _scheduler.start()
+    else:
+        logger.info("스케줄러 꺼짐 (SCHEDULER_ENABLED=false)")
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    _scheduler.stop()
+
+
 # 요청 모델
 class NewsletterRequest(BaseModel):
     """뉴스레터 생성 요청"""

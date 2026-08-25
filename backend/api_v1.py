@@ -17,6 +17,7 @@ from typing import List, Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+import scheduler
 from newsletter_service import FREQUENCY_LABEL, service
 
 router = APIRouter(prefix="/api", tags=["화면 연동"])
@@ -142,3 +143,22 @@ async def get_draft(draft_id: str):
     if not draft:
         raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
     return service.to_response(draft)
+
+
+# ------------------------------------------------------------------
+# 운영 확인용 (버튼은 아니지만 상태를 볼 수 있어야 한다)
+# ------------------------------------------------------------------
+@router.get("/status", summary="백엔드 상태 (저장소·스케줄러·수집 현황)")
+async def backend_status():
+    return {
+        "storage": service.storage_mode(),
+        "scheduler": scheduler.status(),
+        "drafts": len(service.list_drafts()),
+        "schedules": len(service.schedules()),
+    }
+
+
+@router.post("/news/collect", summary="뉴스 수집을 지금 실행 (평소엔 스케줄러가 함)")
+async def collect_now(limit_per_feed: int = 12):
+    """1~2분 걸린다. 요청 버튼과 분리해 둔 이유다."""
+    return scheduler.collect_news(limit_per_feed=limit_per_feed)

@@ -248,53 +248,44 @@ erDiagram
 
 ---
 
-## 5. API 엔드포인트 (23개)
+## 5. API 엔드포인트 (3개)
+
+> **2026-08-25 회의에서 3개로 확정.**
+> 이전 판에는 23개로 적혀 있었으나, 그것은 지금 쓰지 않는 예전 화면
+> (`frontend/main.py`)을 기준으로 잡은 것이었다.
+> 새 화면(AgentLetter Compact)에는 버튼이 세 개뿐이다.
+>
+> 자세한 요청·응답 형식은 **API_SPEC.md** 에 있다.
+
+| # | 이름 | 엔드포인트 | 화면 위치 |
+|---|---|---|---|
+| 1 | 주제 선정 | `POST /api/newsletter/request` | ① 뉴스레터 요청 |
+| 2 | 승인 | `POST /api/drafts/{id}/decision` | ② 수정 요청 / 최종 승인 |
+| 3 | 주기 설정과 발송 | `POST /api/schedule` | ① 주기 |
 
 ### 설계 원칙
 
-1. **느린 것과 빠른 것을 나눈다** — 수집·색인(1~2분)은 `/collect`로 분리, 생성·조회는 즉시 응답
-2. **프론트 경로 규약을 따른다** — 프론트가 이미 쓰는 `/api/*` 이름을 그대로 맞춘다
-3. **자원 단위로 묶는다** — 템플릿·구독자·초안 각각 CRUD
+1. **사용자가 누르는 버튼 하나 = 엔드포인트 하나.** 화면에 없는 기능은 만들지 않는다.
+2. **내부 단계는 엔드포인트로 만들지 않는다.** 파이프라인이 7단계라고 해서
+   프론트가 7번 호출하게 하면 순서와 실패 처리를 프론트가 떠안게 된다.
+   프론트는 "무엇을 원하는지"만 말하고, "어떻게 하는지"는 백엔드가 감춘다.
+3. **응답에 초안 전체를 담는다.** 제목·요약·점수·본문 HTML·검수 결과·근거 기사를
+   한 번에 주면 조회 엔드포인트가 따로 필요 없다.
+4. **느린 일은 뒤로 뺀다.** 기사 수집·색인은 1~2분 걸리므로 스케줄러가 미리 돌린다.
+   요청 버튼은 몇 초 만에 응답한다.
 
-### CRUD 매트릭스
+### 승인과 수정을 한 엔드포인트로 묶은 이유
 
-| 자원 | Create | Read | Update | Delete |
-|---|---|---|---|---|
-| **템플릿** | `POST /api/templates` | `GET /api/templates`<br>`GET /api/templates/{id}` | `PUT /api/templates/{id}` | `DELETE /api/templates/{id}` |
-| **구독자** | `POST /api/subscribers` | `GET /api/subscribers` | `PUT /api/subscribers/{id}` | `DELETE /api/subscribers/{id}` |
-| **키워드** | `POST /api/keywords` | `GET /api/keywords` | — | `DELETE /api/keywords/{keyword}` |
-| **스케줄** | `POST /api/schedule` | `GET /api/schedule` | `PUT /api/schedule/{id}` | `DELETE /api/schedule/{id}` |
-| **뉴스** | `POST /api/news/collect` | `GET /api/news`<br>`GET /api/news/{id}` | — | — |
-| **초안** | `POST /api/generate` | `GET /api/drafts`<br>`GET /api/drafts/{id}` | `POST /api/drafts/{id}/revise` | `DELETE /api/drafts/{id}` |
-| **검수지침** | `POST /api/guidelines` | `GET /api/guidelines` | `PUT /api/guidelines/{id}` | — |
-| **발송** | `POST /api/drafts/{id}/dispatch` | `GET /api/dispatch-logs` | — | — |
+화면 ②는 같은 자리에서 **수정 요청**과 **최종 승인** 중 하나를 고르게 되어 있다.
+사람이 판단하는 한 단계의 두 갈래이므로 `action` 으로 구분한다.
+(팀원 `newsletter.py` 의 `human_approval` 노드도 approve/revise/reject 로 같은 구조다.)
 
-### 상태 변경 (CRUD로 표현되지 않는 것)
+### 나중에 추가할 것
 
-| 경로 | 하는 일 |
+| 엔드포인트 | 언제 |
 |---|---|
-| `POST /api/drafts/{id}/approve` | 승인 → 발송 대기 |
-| `POST /api/drafts/{id}/revise` | 피드백 주고 재작성 (Human-in-the-Loop) |
-| `POST /api/drafts/batch-approve` | 여러 개 한번에 승인 |
-| `POST /api/drafts/{id}/review` | 검수만 다시 실행 |
-| `POST /api/research/ask` | 리서치 — 기사 근거 답변 |
-| `GET /api/health` | 상태 확인 |
-
-### 프론트엔드가 이미 부르고 있는 경로
-
-프론트 `main.py`에 아래가 이미 있다.
-**백엔드가 같은 경로를 제공하면, 프론트는 주소만 `:8001`로 바꾸면 된다.**
-
-```
-GET    /api/keywords              POST /api/keywords        DELETE /api/keywords/{keyword}
-GET    /api/schedule              POST /api/schedule
-GET    /api/drafts                GET  /api/drafts/{id}
-POST   /api/generate
-POST   /api/drafts/{id}/approve   POST /api/drafts/{id}/revise
-POST   /api/drafts/batch-approve
-```
-
----
+| `GET /api/drafts` | 새로고침해도 목록이 남아야 할 때 |
+| `POST /api/news/collect` | 기사 수집을 수동으로 돌릴 때 |
 
 ## 6. 주요 흐름
 

@@ -1,14 +1,14 @@
 """
 메일 발송
 
-이번 프로젝트는 한 사람에게만 보낸다. 구독자 관리 DB 를 만들지 않고
-.env 의 MAIL_TO 한 줄로 끝낸다.
+구독자 관리 DB 를 만들지 않고 .env 의 MAIL_TO 한 줄로 끝낸다.
+여러 명에게 보내려면 쉼표로 구분해 적는다.
 
     SMTP_SERVER=smtp.gmail.com
     SMTP_PORT=587
     SENDER_EMAIL=본인@gmail.com
     SENDER_PASSWORD=앱비밀번호16자리
-    MAIL_TO=받는사람@gmail.com
+    MAIL_TO=a@gmail.com,b@gmail.com,c@gmail.com
     MAIL_DRY_RUN=true
 
 주의: 지메일은 계정 비밀번호로 로그인되지 않는다.
@@ -46,6 +46,18 @@ def valid_email(addr: str) -> bool:
     return bool(EMAIL_RE.match(addr.strip()))
 
 
+def recipients() -> List[str]:
+    """
+    MAIL_TO 를 쉼표로 나눠 여러 명을 돌려준다.
+
+        MAIL_TO=a@gmail.com,b@gmail.com,c@gmail.com
+
+    한 명만 적어도 되고, 여러 명이면 쉼표로 구분한다.
+    """
+    raw = _env("MAIL_TO")
+    return [a.strip() for a in raw.split(",") if a.strip()]
+
+
 def diagnose() -> Dict:
     """
     발송 설정을 점검한다. 비밀번호 값은 절대 출력하지 않는다.
@@ -55,7 +67,7 @@ def diagnose() -> Dict:
     port = _env("SMTP_PORT", "587")
     sender = _env("SENDER_EMAIL")
     password = _env("SENDER_PASSWORD")
-    to = _env("MAIL_TO")
+    to_list = recipients()
 
     problems: List[str] = []
     if not sender:
@@ -73,10 +85,13 @@ def diagnose() -> Dict:
             "계정 비밀번호를 넣으신 건 아닌지 확인하세요."
         )
 
-    if not to:
+    if not to_list:
         problems.append("MAIL_TO 가 비어 있습니다.")
-    elif not valid_email(to):
-        problems.append(f"MAIL_TO 형식이 이상합니다: {to}")
+    for a in to_list:
+        if not valid_email(a):
+            problems.append(f"메일 주소 형식이 이상합니다: {a}")
+        elif a.endswith("gmaill.com"):
+            problems.append(f"오타로 보입니다 (gmaill -> gmail): {a}")
 
     return {
         "ready": not problems,
@@ -84,7 +99,8 @@ def diagnose() -> Dict:
         "smtp_server": server,
         "smtp_port": port,
         "sender": sender or "(비어 있음)",
-        "to": to or "(비어 있음)",
+        "to": to_list,
+        "to_count": len(to_list),
         "password_set": bool(password),        # 값이 아니라 여부만
         "password_length": len(password),      # 길이만
         "dry_run": is_dry_run(),
@@ -113,19 +129,23 @@ def test_login() -> Dict:
                 "hint": "네트워크나 SMTP 주소·포트를 확인하세요."}
 
 
-def send_draft(draft: Dict, to: Optional[str] = None) -> Dict:
+def send_draft(draft: Dict, to: Optional[List[str]] = None) -> Dict:
     """
-    요약본 하나를 메일로 보낸다.
+    요약본 하나를 메일로 보낸다. 받는 사람이 여러 명이면 다 같이 받는다.
 
     MAIL_DRY_RUN=true 면 실제로 보내지 않고 보낼 내용만 알려준다.
     시연 중 실수로 메일이 나가는 것을 막기 위한 장치다.
     """
     d = diagnose()
-    to = (to or d["to"]).strip()
+    if isinstance(to, str):
+        to = [to]
+    to_list = [a for a in (to or d["to"]) if a]
 
     if not d["ready"]:
         return {"sent": False, "reason": "발송 설정이 덜 됐습니다.",
                 "problems": d["problems"]}
+    if not to_list:
+        return {"sent": False, "reason": "받는 사람이 없습니다."}
 
     subject = f"[뉴스레터] {draft.get('title', '오늘의 뉴스')}"
     html = to_email_html(
@@ -143,13 +163,14 @@ def send_draft(draft: Dict, to: Optional[str] = None) -> Dict:
             "sent": False,
             "dry_run": True,
             "message": "MAIL_DRY_RUN=true 라 실제로 보내지 않았습니다.",
-            "would_send": {"to": to, "subject": subject, "html_length": len(html)},
+            "would_send": {"to": to_list, "subject": subject,
+                           "html_length": len(html)},
         }
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = d["sender"]
-    msg["To"] = to
+    msg["To"] = ", ".join(to_list)
     msg.set_content("HTML 메일입니다. HTML 을 지원하는 앱에서 열어주세요.")
     msg.add_alternative(html, subtype="html")
 
@@ -158,7 +179,8 @@ def send_draft(draft: Dict, to: Optional[str] = None) -> Dict:
             smtp.starttls(context=ssl.create_default_context())
             smtp.login(d["sender"], _env("SENDER_PASSWORD"))
             smtp.send_message(msg)
-        return {"sent": True, "to": to, "subject": subject}
+        return {"sent": True, "to": to_list, "count": len(to_list),
+                "subject": subject}
     except smtplib.SMTPAuthenticationError:
         return {"sent": False, "reason": "로그인 거부",
                 "hint": "앱 비밀번호를 확인하세요."}

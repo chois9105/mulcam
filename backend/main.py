@@ -62,6 +62,25 @@ app.include_router(rag_router)
 
 
 # ---------------------------------------------------------------
+# 화면 제공
+#
+# 같은 서버에서 화면까지 같이 준다. 그래야 브라우저가 다른 주소로
+# 요청하는 상황이 안 생겨서 CORS 문제도 없고, 서버 하나만 켜면 된다.
+#   http://127.0.0.1:8001/  ->  화면
+# ---------------------------------------------------------------
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.isdir(_STATIC):
+    app.mount("/static", StaticFiles(directory=_STATIC), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def _index():
+        return FileResponse(os.path.join(_STATIC, "index.html"))
+
+
+# ---------------------------------------------------------------
 # 서버가 뜨고 내려갈 때
 # ---------------------------------------------------------------
 import scheduler as _scheduler

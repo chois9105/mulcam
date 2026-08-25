@@ -162,3 +162,47 @@ async def backend_status():
 async def collect_now(limit_per_feed: int = 12):
     """1~2분 걸린다. 요청 버튼과 분리해 둔 이유다."""
     return scheduler.collect_news(limit_per_feed=limit_per_feed)
+
+
+# ------------------------------------------------------------------
+# LangGraph 파이프라인 (과제 요구사항 시연용)
+#
+# 위의 3개 엔드포인트와 하는 일은 같다. 다만 실행을 LangGraph 로 하여
+# 과제가 요구한 두 가지를 실제로 보여준다.
+#   - Conditional Edges : 검수 미달이면 작성 단계로 되돌아가는 순환
+#   - Human-in-the-Loop : 승인 전까지 그래프를 멈추고 상태를 저장
+# ------------------------------------------------------------------
+class GraphStartRequest(BaseModel):
+    request_text: str = Field(..., min_length=2)
+    thread_id: Optional[str] = Field(None, description="비우면 자동 생성")
+
+
+class GraphResumeRequest(BaseModel):
+    action: Literal["approve", "revise", "reject"]
+    feedback: str = Field("", description="revise 일 때 어떻게 바꿀지")
+    frequency: Frequency = Field("daily")
+
+
+@router.post("/graph/start", summary="[LangGraph] 실행 - 인간 승인 노드에서 멈춘다")
+async def graph_start(req: GraphStartRequest):
+    import graph_pipeline as gp
+    tid = req.thread_id or f"thread_{datetime.now():%Y%m%d_%H%M%S}"
+    try:
+        return gp.start(req.request_text, tid)
+    except Exception as e:
+        raise HTTPException(500, f"그래프 실행 실패: {e}")
+
+
+@router.post("/graph/{thread_id}/resume", summary="[LangGraph] 사람의 결정으로 이어서 실행")
+async def graph_resume(thread_id: str, req: GraphResumeRequest):
+    import graph_pipeline as gp
+    try:
+        return gp.resume(thread_id, req.action, req.feedback, req.frequency)
+    except Exception as e:
+        raise HTTPException(500, f"그래프 재개 실패: {e}")
+
+
+@router.get("/graph/{thread_id}", summary="[LangGraph] 지금 어느 노드에서 멈춰 있나")
+async def graph_state(thread_id: str):
+    import graph_pipeline as gp
+    return gp.state_of(thread_id)

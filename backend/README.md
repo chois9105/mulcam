@@ -104,6 +104,7 @@ python test_rag.py
 | `rss_collector.py` | RSS 수집, 중복 제거, 정형 기사 필터 |
 | `article_fetcher.py` | 링크를 따라가 기사 본문 추출 |
 | `rag_engine.py` | 임베딩·검색·답변·요약 3종 |
+| `html_render.py` | 마크다운 → HTML (대시보드 조각 / 이메일 문서) |
 | `rag_api.py` | RAG 엔드포인트 |
 | `main.py` | FastAPI 앱 (라우터 등록) |
 | `project_newsletter.py` | LLM 단독 뉴스레터 생성 (RAG 없음) |

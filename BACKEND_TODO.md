@@ -128,9 +128,13 @@ http://127.0.0.1:8001/rag/news        원본 뉴스 JSON
 | `AuditReport` (readability / fact_accuracy / coherence 점수) | **없음** | **검수 기능 신규 개발** |
 | `NewsletterDraft` (id, status, score, tags…) | 없음 | 초안 모델 추가 |
 
-**할 일**
-- [ ] 마크다운 → HTML 변환 (`markdown` 라이브러리 한 줄이면 됨)
-- [ ] `ResearchSource` 형식 변환 함수
+**진행 상황**
+- [x] 마크다운 → HTML 변환 (`html_render.py`, 2026-08-25 완료)
+  - `to_dashboard_html()` — 프론트 CSS 클래스에 맞춘 HTML 조각
+  - `to_email_html()` — 이메일용 전체 HTML 문서
+  - `/rag/summarize` 응답에 `article_html` 필드 추가
+  - 덤: 이메일에 마크다운이 그대로 나가던 버그도 수정
+- [ ] `ResearchSource` 형식 변환 함수  ← **다음**
 - [ ] **검수(품질 평가) 기능 개발** ← 아래 C 참고
 
 ---

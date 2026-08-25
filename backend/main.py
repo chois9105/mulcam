@@ -8,6 +8,7 @@ from typing import List, Optional
 from project_newsletter import NewsletterAgent
 from email_utils import EmailService, EmailTemplate
 from rss_collector import RSSCollector
+from html_render import to_email_html
 import logging
 from datetime import datetime
 import os
@@ -116,10 +117,9 @@ async def generate_newsletter(request: NewsletterRequest):
 
             if valid_recipients:
                 # HTML 템플릿 생성
-                html_content = EmailTemplate.create_newsletter_html(
-                    title=request.topic,
-                    content=newsletter
-                )
+                # 뉴스레터는 마크다운이라 그대로 넣으면 '#', '**' 가 글자로 보인다.
+                # HTML 로 변환해서 넣는다.
+                html_content = to_email_html(request.topic, newsletter)
 
                 # 이메일 발송
                 email_results = email_service.send_newsletter(
@@ -215,10 +215,9 @@ async def generate_newsletter_from_rss(request: NewsletterRequest):
             ]
 
             if valid_recipients:
-                html_content = EmailTemplate.create_newsletter_html(
-                    title=request.topic,
-                    content=newsletter
-                )
+                # 뉴스레터는 마크다운이라 그대로 넣으면 '#', '**' 가 글자로 보인다.
+                # HTML 로 변환해서 넣는다.
+                html_content = to_email_html(request.topic, newsletter)
                 email_results = email_service.send_newsletter(
                     recipients=valid_recipients,
                     subject=f"뉴스레터: {request.topic}",

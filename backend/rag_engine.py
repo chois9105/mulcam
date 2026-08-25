@@ -22,6 +22,8 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+from html_render import to_dashboard_html
+
 load_dotenv()
 
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -214,12 +216,15 @@ class NewsRAG:
             "context": self._format_context(docs),
             "topic": topic,
         }).content
+        sources = self._sources(docs)
         return {
             "topic": topic,
             "style": style,
             "style_name": STYLE_INFO[style]["name"],
-            "newsletter": newsletter,
-            "sources": self._sources(docs),
+            "newsletter": newsletter,                 # 마크다운 원문
+            # 프론트엔드 대시보드가 그대로 쓸 수 있는 HTML 조각
+            "article_html": to_dashboard_html(newsletter, sources),
+            "sources": sources,
         }
 
     def summarize_all_styles(self, topic: str) -> Dict[str, Dict]:

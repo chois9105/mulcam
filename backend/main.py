@@ -1,6 +1,7 @@
 """뉴스레터 에이전트 메인 애플리케이션"""
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -25,6 +26,29 @@ app = FastAPI(
     title="Newsletter Agent API",
     description="RSS 수집 + RAG 기반 뉴스레터 자동 생성 및 배송 API",
     version="1.1.0"
+)
+
+# ---------------------------------------------------------------
+# CORS 설정
+#
+# 프론트엔드(:8000)와 백엔드(:8001)가 서로 다른 포트에서 돈다.
+# 브라우저는 보안상 다른 주소로의 요청을 기본으로 막기 때문에
+# "이 주소들은 허용한다"고 미리 알려줘야 한다.
+# ---------------------------------------------------------------
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:8000,http://127.0.0.1:8000,"      # 프론트엔드 FastAPI
+        "http://localhost:8501,http://127.0.0.1:8501",      # Streamlit
+    ).split(",") if o.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # RAG 라우터 등록 (/rag/build, /rag/ask, /rag/summarize ...)
@@ -61,6 +85,9 @@ async def health_check():
     """헬스 체크"""
     return {
         "status": "healthy",
+        "service": "newsletter-backend",
+        "port": int(os.getenv("PORT", 8001)),
+        "cors_allowed": ALLOWED_ORIGINS,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -220,5 +247,6 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000))
+        # 프론트엔드가 8000 을 쓰므로 백엔드는 8001 을 기본으로 한다
+        port=int(os.getenv("PORT", 8001)),
     )

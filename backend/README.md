@@ -62,26 +62,29 @@ LLM은 학습 시점 이후의 뉴스를 모른다. 오늘 수집한 기사를 �
 ```bash
 pip install -r requirements.txt
 cp .env.example .env          # .env 에 OPENAI_API_KEY 입력
-python -m uvicorn main:app --reload
+python -m uvicorn main:app --reload --port 8001
 ```
 
-문서: http://127.0.0.1:8000/docs
+문서: http://127.0.0.1:8001/docs
+
+> 백엔드는 **8001번**을 쓴다. 프론트엔드(`frontend/main.py`)가 8000번을 쓰기 때문이다.
+> 두 서버를 동시에 켜야 연동 테스트가 된다.
 
 ### 사용 예
 
 ```bash
 # 1) 색인 생성 (처음 한 번)
-curl -X POST http://127.0.0.1:8000/rag/build \
+curl -X POST http://127.0.0.1:8001/rag/build \
   -H "Content-Type: application/json" \
   -d '{"limit_per_feed": 15, "fetch_full_text": true}'
 
 # 2) 리서치
-curl -X POST http://127.0.0.1:8000/rag/ask \
+curl -X POST http://127.0.0.1:8001/rag/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "오늘 반도체 관련 소식은?", "k": 5}'
 
 # 3) 요약 (스타일 선택)
-curl -X POST http://127.0.0.1:8000/rag/summarize \
+curl -X POST http://127.0.0.1:8001/rag/summarize \
   -H "Content-Type: application/json" \
   -d '{"topic": "오늘의 IT 뉴스", "style": "deep"}'
 ```

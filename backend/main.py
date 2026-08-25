@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from newsletter_agent import NewsletterAgent
+from project_newsletter import NewsletterAgent
 from email_utils import EmailService, EmailTemplate
 from rss_collector import RSSCollector
 import logging
@@ -23,9 +23,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Newsletter Agent API",
-    description="AI 기반 뉴스레터 자동 생성 및 배송 API",
-    version="1.0.0"
+    description="RSS 수집 + RAG 기반 뉴스레터 자동 생성 및 배송 API",
+    version="1.1.0"
 )
+
+# RAG 라우터 등록 (/rag/build, /rag/ask, /rag/summarize ...)
+from rag_api import router as rag_router
+app.include_router(rag_router)
 
 
 # 요청 모델

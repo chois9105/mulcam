@@ -25,7 +25,7 @@ from db_models import (  # noqa: F401  (import 해야 테이블이 등록된다)
     Article, AuditReport, DispatchLog, Draft, DraftSource,
     Keyword, ReviewGuideline, Schedule, Subscriber, Template,
 )
-from templates_seed import DEFAULT_GUIDELINE, DEFAULT_TEMPLATES
+from templates_seed import ACTIVE_CODES, DEFAULT_GUIDELINE, DEFAULT_TEMPLATES
 
 
 def step(msg: str):
@@ -72,9 +72,12 @@ def main() -> int:
         print(f"    - {t}")
 
     # 4. 기본 템플릿 넣기 --------------------------------------------
-    step("4. 기본 템플릿 3종 넣기")
+    step("4. 출력 형태 넣기 (회의에서 a 하나만 쓰기로 함)")
     with session_scope() as s:
         for t in DEFAULT_TEMPLATES:
+            if t["code"] not in ACTIVE_CODES:
+                print(f"    [{t['code']}] {t['name']} - 보류 (건너뜀)")
+                continue
             found = s.query(Template).filter_by(code=t["code"]).first()
             if found:
                 print(f"    [{t['code']}] {t['name']} - 이미 있음 (건너뜀)")

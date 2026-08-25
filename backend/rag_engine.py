@@ -56,7 +56,23 @@ COMMON_RULES = (
 )
 
 STYLE_PROMPTS = {
-    # 1) 짧게 훑기 - 출퇴근길 3줄 요약
+    # a) 기사 간단 요약  ← 2026-08-25 회의에서 이것 하나만 쓰기로 확정
+    #    화면 설명: "선택한 뉴스의 제목과 핵심 요약만 compact하게 보여줍니다"
+    #    전체를 뭉뚱그리지 않고 기사 하나하나를 짧게 정리한다.
+    "summary": ChatPromptTemplate.from_messages([
+        ("system",
+         "당신은 뉴스 큐레이터입니다. '{topic}' 와 관련된 기사들을 하나씩 간단히 정리합니다.\n"
+         "형식:\n"
+         "- 맨 위에 한 줄 헤드라인 (# 로 시작)\n"
+         "- 그 아래 기사별로 다음 형식을 반복한다.\n"
+         "  **기사 제목** [n]\n"
+         "  한두 문장으로 무슨 일인지 설명. 숫자·기관명 같은 핵심 사실을 넣는다.\n"
+         "- 기사끼리 묶어서 뭉뚱그리지 말고, 한 기사당 한 항목으로 따로 쓴다.\n"
+         "- 주제와 관련이 적은 기사는 빼도 된다.\n" + COMMON_RULES),
+        ("human", "'{topic}' 관련 기사들을 간단히 요약해주세요."),
+    ]),
+
+    # 아래 두 가지는 보류 (회의에서 a 하나만 쓰기로 함). 코드는 남겨둔다.
     "brief": ChatPromptTemplate.from_messages([
         ("system",
          "당신은 뉴스 큐레이터입니다. '{topic}' 주제로 아주 짧은 브리핑을 만듭니다.\n"
@@ -93,10 +109,15 @@ STYLE_PROMPTS = {
     ]),
 }
 
+# 2026-08-25 회의: 출력 형태는 'a. 기사 간단 요약' 하나만 쓴다.
+DEFAULT_STYLE = "summary"
+
 STYLE_INFO = {
-    "brief":      {"name": "짧은 브리핑", "설명": "200자 이내 3줄 요약", "권장_기사수": 5},
-    "newsletter": {"name": "표준 뉴스레터", "설명": "이슈 3~5개 + 정리", "권장_기사수": 8},
-    "deep":       {"name": "심층 분석", "설명": "사실·의미·흐름·참고기사", "권장_기사수": 12},
+    "summary":    {"name": "기사 간단 요약", "설명": "기사별 제목 + 한두 문장", "권장_기사수": 8, "사용": True},
+    # 보류 (필요해지면 살린다)
+    "brief":      {"name": "짧은 브리핑", "설명": "200자 이내 3줄 요약", "권장_기사수": 5, "사용": False},
+    "newsletter": {"name": "표준 뉴스레터", "설명": "이슈 3~5개 + 정리", "권장_기사수": 8, "사용": False},
+    "deep":       {"name": "심층 분석", "설명": "사실·의미·흐름·참고기사", "권장_기사수": 12, "사용": False},
 }
 
 
@@ -235,7 +256,7 @@ class NewsRAG:
         }).content
         return {"question": question, "answer": answer, "sources": self._sources(docs)}
 
-    def summarize(self, topic: str, style: str = "newsletter", k: int = None) -> Dict:
+    def summarize(self, topic: str, style: str = DEFAULT_STYLE, k: int = None) -> Dict:
         """
         요약: 주제 관련 기사를 모아 뉴스레터를 만든다.
 
@@ -270,4 +291,5 @@ class NewsRAG:
 
     def summarize_all_styles(self, topic: str) -> Dict[str, Dict]:
         """3가지 버전을 한 번에 만들어 비교용으로 돌려준다."""
-        return {s: self.summarize(topic, style=s) for s in STYLE_PROMPTS}
+        return {s: self.summarize(topic, style=s)
+                for s, info in STYLE_INFO.items() if info.get("사용")}

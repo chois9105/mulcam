@@ -18,3 +18,9 @@ langchain-community>=0.4
 faiss-cpu>=1.8
 tiktoken>=0.7
 openai>=1.40
+
+# MySQL + 스케줄러
+sqlalchemy>=2.0
+pymysql>=1.1
+cryptography>=42.0
+apscheduler>=3.10

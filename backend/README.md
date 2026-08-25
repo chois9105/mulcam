@@ -52,6 +52,9 @@ LLM은 학습 시점 이후의 뉴스를 모른다. 오늘 수집한 기사를 �
 | GET | `/rag/news` | 수집된 원본 뉴스 JSON (링크 포함, 상세페이지 이동용) |
 | POST | `/rag/ask` | 리서치 — 질문에 기사 근거로 답변 |
 | POST | `/rag/summarize` | 요약 — style 로 3종 중 선택 |
+| POST | `/rag/draft` | 요약+검수 → 프론트 `NewsletterDraft` 형식 |
+| GET | `/rag/drafts` | 생성된 초안 목록 |
+| GET | `/rag/drafts/{id}` | 초안 상세 |
 | POST | `/rag/summarize/compare` | 3종을 한 번에 생성해 비교 |
 | GET | `/rag/styles` | 스타일 목록 |
 
@@ -105,6 +108,8 @@ python test_rag.py
 | `article_fetcher.py` | 링크를 따라가 기사 본문 추출 |
 | `rag_engine.py` | 임베딩·검색·답변·요약 3종 |
 | `html_render.py` | 마크다운 → HTML (대시보드 조각 / 이메일 문서) |
+| `reviewer.py` | 검수 에이전트 (사실성35/출처25/구성20/독자20) |
+| `adapters.py` | 프론트엔드 형식 변환 (`NewsletterDraft`) |
 | `rag_api.py` | RAG 엔드포인트 |
 | `main.py` | FastAPI 앱 (라우터 등록) |
 | `project_newsletter.py` | LLM 단독 뉴스레터 생성 (RAG 없음) |

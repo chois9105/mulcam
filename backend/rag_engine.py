@@ -119,11 +119,21 @@ class NewsRAG:
         for n in news_items:
             # 본문(content)을 가져왔으면 본문을, 못 가져왔으면 RSS 요약을 쓴다
             body_text = n.get("content") or n.get("description", "")
-            body = f"제목: {n.get('title','')}\n내용: {body_text}"
+            title = n.get("title", "")
+
+            # 검색용 글과 근거용 글을 나눈다.
+            #
+            # 본문 900자를 통째로 임베딩하면 주제가 희석돼서 검색이 망가진다.
+            # 실제로 "AI 반도체"를 검색했을 때 폭염주의보·의료폐기물 기사가
+            # 상위로 올라왔다. 제목과 첫 문단이 기사 주제를 가장 잘 나타내므로
+            # 그 부분만 임베딩하고, 본문 전체는 metadata 에 넣어두었다가
+            # LLM 에 근거로 넘길 때 쓴다.
+            search_text = f"{title}. {body_text[:200]}"
             docs.append(Document(
-                page_content=body,
+                page_content=search_text,
                 metadata={
-                    "title": n.get("title", ""),
+                    "title": title,
+                    "body": body_text[:1500],      # LLM 에 넘길 근거 본문
                     "link": n.get("link", ""),
                     "source": n.get("source", ""),
                     "published": n.get("published", ""),
@@ -155,9 +165,36 @@ class NewsRAG:
             raise RuntimeError("색인이 없습니다. 먼저 build()를 실행하세요.")
 
     # ---------- 검색 ----------
-    def search(self, question: str, k: int = 5) -> List[Document]:
+    def search(self, question: str, k: int = 5, min_keep: int = 3) -> List[Document]:
+        """
+        관련 기사를 찾는다.
+
+        k개를 무조건 채우면, 주제와 상관없는 기사까지 근거로 들어가
+        요약 품질이 떨어진다("AI 반도체"를 물었는데 병원 기사가 섞이는 문제).
+        그래서 가장 잘 맞는 기사보다 크게 뒤처지는 것은 버린다(RAG_DISTANCE_MARGIN).
+        다만 전부 버리면 답을 못 만드니 최소 min_keep개는 남긴다.
+        """
         self._require_store()
-        return self.store.similarity_search(question, k=k)
+        scored = self.store.similarity_search_with_score(question, k=k)
+        if not scored:
+            return []
+
+        # FAISS 기본 거리(L2): 값이 작을수록 비슷하다.
+        # 절대 기준을 정하기 어렵다(질문 길이에 따라 값이 통째로 달라진다).
+        # 그래서 "가장 잘 맞는 기사"를 기준 삼아 상대적으로 판단한다.
+        margin = float(os.getenv("RAG_DISTANCE_MARGIN", "0.08"))
+        best, worst = scored[0][1], scored[-1][1]
+
+        # 1등과 꼴등의 차이가 거의 없다 = 딱 맞는 기사가 따로 없다는 뜻.
+        # 이럴 때 걸러봐야 의미가 없으므로 전부 쓴다.
+        if worst - best <= margin:
+            return [doc for doc, _ in scored]
+
+        # 특정 주제를 물은 경우: 1등보다 크게 뒤처지는 기사는 버린다
+        kept = [doc for doc, dist in scored if dist <= best + margin]
+        if len(kept) < min_keep:
+            kept = [doc for doc, _ in scored[:min_keep]]
+        return kept
 
     @staticmethod
     def _format_context(docs: List[Document]) -> str:
@@ -166,7 +203,9 @@ class NewsRAG:
             m = d.metadata
             lines.append(
                 f"[{i}] 출처: {m.get('source','')} / {m.get('published','')}\n"
-                f"    {d.page_content.strip()[:600]}\n"
+                f"    제목: {m.get('title','')}\n"
+                # 검색은 짧은 글로 했지만, 근거로는 본문 전체를 넘긴다
+                f"    본문: {(m.get('body') or d.page_content).strip()[:800]}\n"
                 f"    링크: {m.get('link','')}"
             )
         return "\n\n".join(lines)
@@ -210,7 +249,9 @@ class NewsRAG:
         if k is None:
             k = STYLE_INFO[style]["권장_기사수"]
 
-        docs = self.search(topic, k=k)
+        # 요약은 소재가 어느 정도 있어야 하므로 최소 절반은 남긴다.
+        # (리서치용 ask() 는 정확도가 우선이라 min_keep 을 낮게 둔다)
+        docs = self.search(topic, k=k, min_keep=max(3, k // 2))
         chain = STYLE_PROMPTS[style] | self.llm
         newsletter = chain.invoke({
             "context": self._format_context(docs),

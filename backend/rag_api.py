@@ -13,6 +13,9 @@ RAG 뉴스레터 API 라우터
   POST /rag/summarize  요약 - 3가지 스타일 중 선택
   GET  /rag/styles     사용 가능한 요약 스타일 목록
   GET  /rag/news       수집된 원본 뉴스 JSON (링크 포함, 상세페이지 이동용)
+  POST /rag/draft      요약+검수 -> 프론트엔드 NewsletterDraft 형식으로 반환
+  GET  /rag/drafts     생성된 초안 목록
+  GET  /rag/drafts/{id} 초안 상세
 """
 
 from datetime import datetime
@@ -21,14 +24,16 @@ from typing import List, Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from adapters import build_draft
 from article_fetcher import enrich
 from rag_engine import STYLE_INFO, NewsRAG
+from reviewer import NewsletterReviewer
 from rss_collector import DEFAULT_FEEDS, RSSCollector
 
 router = APIRouter(prefix="/rag", tags=["RAG 뉴스레터"])
 
 # 마지막 수집 결과를 메모리에 보관 (원본 JSON 조회용)
-_state = {"news": [], "built_at": None, "count": 0, "full_text_ok": 0}
+_state = {"news": [], "built_at": None, "count": 0, "full_text_ok": 0, "drafts": {}}
 
 
 # ---------- 요청 모델 ----------
@@ -48,6 +53,15 @@ class SummarizeRequest(BaseModel):
         "newsletter", description="brief=짧은브리핑 / newsletter=표준 / deep=심층분석"
     )
     k: Optional[int] = Field(None, description="비우면 스타일별 권장값 사용")
+
+
+class DraftRequest(BaseModel):
+    """프론트엔드 대시보드용 초안 생성 요청"""
+    topic: str = Field(..., description="주제 또는 키워드", examples=["AI 반도체"])
+    style: Literal["brief", "newsletter", "deep"] = Field("newsletter")
+    keywords: List[str] = Field(default_factory=list, description="태그로 붙일 키워드")
+    frequency: Literal["daily", "weekly", "biweekly", "monthly"] = Field("daily")
+    review: bool = Field(True, description="검수 에이전트를 돌릴지 (끄면 빠르지만 점수 없음)")
 
 
 # ---------- 엔드포인트 ----------
@@ -131,6 +145,57 @@ async def summarize(req: SummarizeRequest):
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, f"요약 생성 실패: {e}")
+
+
+@router.post("/draft", summary="초안 생성 (프론트엔드 NewsletterDraft 형식)")
+async def create_draft(req: DraftRequest):
+    """
+    요약 + 검수를 한 번에 돌려, 프론트엔드가 그대로 화면에 꽂을 수 있는
+    NewsletterDraft 형식으로 돌려준다.
+
+    프론트엔드 agent_graph.py 의 가짜 데이터를 이 응답으로 바꾸면 된다.
+    """
+    try:
+        rag = NewsRAG()
+        result = rag.summarize(req.topic, style=req.style)
+
+        review = audit = None
+        if req.review:
+            reviewer = NewsletterReviewer()
+            review = reviewer.review(result["newsletter"], result["sources"])
+            audit = reviewer.audit_report(review)
+
+        draft_id = f"draft_{datetime.now():%Y%m%d_%H%M%S}"
+        draft = build_draft(
+            draft_id=draft_id,
+            result=result,
+            review=review,
+            audit=audit,
+            frequency=req.frequency,
+            keywords=req.keywords or [req.topic],
+        )
+        _state["drafts"][draft_id] = draft
+        return draft
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"초안 생성 실패: {e}")
+
+
+@router.get("/drafts", summary="생성된 초안 목록")
+async def list_drafts(status: str = "all"):
+    items = list(_state["drafts"].values())
+    if status != "all":
+        items = [d for d in items if d.get("status") == status]
+    return {"count": len(items), "drafts": items}
+
+
+@router.get("/drafts/{draft_id}", summary="초안 상세")
+async def get_draft(draft_id: str):
+    draft = _state["drafts"].get(draft_id)
+    if not draft:
+        raise HTTPException(404, f"초안을 찾을 수 없습니다: {draft_id}")
+    return draft
 
 
 @router.post("/summarize/compare", summary="3가지 스타일 한번에 비교")

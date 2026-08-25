@@ -52,7 +52,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# RAG 라우터 등록 (/rag/build, /rag/ask, /rag/summarize ...)
+# 화면 연동 API — 버튼 3개 (/api/newsletter/request, /api/drafts/{id}/revise, /approve)
+from api_v1 import router as api_router
+app.include_router(api_router)
+
+# RAG 라우터 (개발·확인용: /rag/build, /rag/ask, /rag/summarize ...)
 from rag_api import router as rag_router
 app.include_router(rag_router)
 

@@ -3,8 +3,7 @@
 
 하는 일
     1. newsletter 데이터베이스가 없으면 만든다
-    2. 테이블 10개를 만든다 (이미 있으면 건너뛴다)
-    3. 기본 템플릿 3종(a/b/c)과 기본 검수 지침을 넣는다
+    2. 테이블 2개(articles, drafts)를 만든다
 
 실행
     python init_db.py
@@ -12,6 +11,9 @@
 미리 준비할 것
     - MySQL 서비스 실행 (윈도우 서비스 MYSQL84)
     - backend/.env 에 MYSQL_PASSWORD 입력
+
+출력 형태와 검수 지침은 DB 에 넣지 않는다.
+각각 한 종류뿐이라 templates_seed.py 의 상수로 두는 편이 간단하다.
 """
 
 from __future__ import annotations
@@ -20,12 +22,10 @@ import sys
 
 from sqlalchemy import inspect
 
-from database import Base, DB_NAME, check_connection, create_database_if_missing, engine, session_scope
-from db_models import (  # noqa: F401  (import 해야 테이블이 등록된다)
-    Article, AuditReport, DispatchLog, Draft, DraftSource,
-    Keyword, ReviewGuideline, Schedule, Subscriber, Template,
+from database import (
+    Base, DB_NAME, check_connection, create_database_if_missing, engine, session_scope,
 )
-from templates_seed import ACTIVE_CODES, DEFAULT_GUIDELINE, DEFAULT_TEMPLATES
+from db_models import Article, Draft  # noqa: F401  (import 해야 테이블이 등록된다)
 
 
 def step(msg: str):
@@ -39,14 +39,13 @@ def main() -> int:
     if not PASSWORD:
         print("  [중단] MYSQL_PASSWORD 가 비어 있습니다.")
         print("         backend/.env 파일을 열어 MySQL 비밀번호를 넣어주세요.")
-        print("         예) MYSQL_PASSWORD=내비밀번호")
         return 1
 
     # 2. 데이터베이스 생성 -------------------------------------------
     step(f"2. 데이터베이스 '{DB_NAME}' 준비")
     try:
         create_database_if_missing()
-        print(f"  준비 완료")
+        print("  준비 완료")
     except Exception as e:
         msg = str(e)
         print(f"  [실패] {msg[:200]}")
@@ -71,38 +70,11 @@ def main() -> int:
     for t in tables:
         print(f"    - {t}")
 
-    # 4. 기본 템플릿 넣기 --------------------------------------------
-    step("4. 출력 형태 넣기 (회의에서 a 하나만 쓰기로 함)")
+    # 4. 확인 -------------------------------------------------------
+    step("4. 확인")
     with session_scope() as s:
-        for t in DEFAULT_TEMPLATES:
-            if t["code"] not in ACTIVE_CODES:
-                print(f"    [{t['code']}] {t['name']} - 보류 (건너뜀)")
-                continue
-            found = s.query(Template).filter_by(code=t["code"]).first()
-            if found:
-                print(f"    [{t['code']}] {t['name']} - 이미 있음 (건너뜀)")
-                continue
-            s.add(Template(**t, is_default=True))
-            print(f"    [{t['code']}] {t['name']} - 추가")
-
-    # 5. 기본 검수 지침 넣기 ------------------------------------------
-    step("5. 기본 검수 지침 넣기")
-    with session_scope() as s:
-        found = s.query(ReviewGuideline).filter_by(name=DEFAULT_GUIDELINE["name"]).first()
-        if found:
-            print(f"    '{DEFAULT_GUIDELINE['name']}' - 이미 있음 (건너뜀)")
-        else:
-            s.add(ReviewGuideline(**DEFAULT_GUIDELINE, is_active=True))
-            print(f"    '{DEFAULT_GUIDELINE['name']}' - 추가")
-
-    # 6. 결과 확인 ---------------------------------------------------
-    step("6. 확인")
-    with session_scope() as s:
-        print(f"  템플릿      : {s.query(Template).count()}건")
-        print(f"  검수 지침   : {s.query(ReviewGuideline).count()}건")
-        print(f"  구독자      : {s.query(Subscriber).count()}건")
-        print(f"  기사        : {s.query(Article).count()}건")
-        print(f"  초안        : {s.query(Draft).count()}건")
+        print(f"  기사   : {s.query(Article).count()}건")
+        print(f"  요약본 : {s.query(Draft).count()}건")
 
     print("\n초기화 완료.")
     return 0

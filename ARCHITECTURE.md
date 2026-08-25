@@ -88,146 +88,80 @@ flowchart TB
 
 ---
 
-## 3. ERD (MySQL 테이블 설계)
+## 3. ERD (MySQL 테이블 설계) — 2개
+
+> **2026-08-25 변경.** 처음에는 10개로 설계했으나
+> "아주 간단하게 만든다"는 방침에 따라 2개로 줄였다.
+>
+> | 뺀 것 | 이유 |
+> |---|---|
+> | `subscribers` `keywords` | 로그인 기능이 없다 |
+> | `dispatch_logs` | 수신자가 한 명이다. `.env` 의 `MAIL_TO` 한 줄로 충분 |
+> | `schedules` | 주기가 요약본마다 하나뿐이라 `drafts` 컬럼으로 흡수 |
+> | `templates` `review_guidelines` | 출력 형태와 검수 지침이 각각 하나뿐이라 코드 상수로 충분 |
+> | `audit_reports` `draft_sources` | 요약본 하나에 하나씩이라 `drafts` 안으로 흡수 |
 
 ```mermaid
 erDiagram
-    subscribers ||--o{ keywords : "관심 키워드"
-    subscribers ||--o{ schedules : "발송 설정"
-    subscribers ||--o{ dispatch_logs : "수신 이력"
-    templates ||--o{ schedules : "적용"
-    templates ||--o{ drafts : "사용"
-    drafts ||--o{ draft_sources : "근거"
-    drafts ||--|| audit_reports : "검수결과"
-    drafts ||--o{ dispatch_logs : "발송"
-    articles ||--o{ draft_sources : "인용됨"
-    review_guidelines ||--o{ audit_reports : "적용된 지침"
-
-    subscribers {
-        bigint id PK
-        varchar email UK
-        varchar name
-        tinyint is_active
-        datetime created_at
-    }
-
-    keywords {
-        bigint id PK
-        bigint subscriber_id FK
-        varchar keyword
-        datetime created_at
-    }
-
-    templates {
-        bigint id PK
-        char code UK
-        varchar name
-        varchar description
-        varchar style
-        text prompt_body
-        int article_count
-        tinyint is_default
-        datetime created_at
-        datetime updated_at
-    }
-
-    schedules {
-        bigint id PK
-        bigint subscriber_id FK
-        bigint template_id FK
-        varchar frequency
-        time dispatch_time
-        varchar days_of_week
-        tinyint is_active
-        datetime last_run_at
-    }
-
     articles {
         bigint id PK
-        char url_hash UK
+        char url_hash UK "중복 수집 방지"
         varchar title
-        varchar link
-        text description
-        mediumtext content
-        varchar source
-        datetime published_at
+        varchar link "상세페이지 주소"
+        text description "RSS 짧은 요약"
+        mediumtext content "크롤링한 본문"
+        varchar source "연합뉴스 등"
+        varchar published
         tinyint has_full_text
         datetime collected_at
     }
 
     drafts {
         bigint id PK
-        bigint template_id FK
-        varchar topic
+        varchar draft_code UK "draft_20260825_173946"
+        text request_text "사용자가 입력한 문장"
+        varchar search_query "문장에서 뽑은 검색어"
         varchar title
         varchar summary
-        mediumtext markdown
-        mediumtext article_html
-        varchar status
-        int score
+        mediumtext markdown "원본"
+        mediumtext article_html "화면용"
+        json sources "근거 기사 + 원문링크"
+        int score "검수 총점"
         varchar score_grade
+        int readability "가독성"
+        int fact_accuracy "사실 정확도"
+        int coherence "일관성"
+        text reviewer_comment
+        varchar status "pending/approved/rejected/sent"
         int revision_count
-        text human_feedback
+        text last_direction "마지막 수정 요청"
+        varchar frequency "주기"
         datetime created_at
         datetime approved_at
-    }
-
-    draft_sources {
-        bigint id PK
-        bigint draft_id FK
-        bigint article_id FK
-        int ref_no
-    }
-
-    review_guidelines {
-        bigint id PK
-        varchar name
-        text content
-        json weights
-        int pass_score
-        tinyint is_active
-        datetime created_at
-    }
-
-    audit_reports {
-        bigint id PK
-        bigint draft_id FK
-        bigint guideline_id FK
-        int total_score
-        tinyint passed
-        int readability
-        int fact_accuracy
-        int coherence
-        text reviewer_comment
-        varchar loop_count
-        datetime created_at
-    }
-
-    dispatch_logs {
-        bigint id PK
-        bigint draft_id FK
-        bigint subscriber_id FK
-        varchar email
-        varchar status
-        varchar error_message
         datetime sent_at
+        varchar send_error
     }
 ```
 
-### 테이블 10개 요약
+### 두 테이블의 역할
 
-| 테이블 | 역할 | 회의 근거 |
-|---|---|---|
-| `subscribers` | 뉴스레터 받을 사람 | 발송 대상이 있어야 함 |
-| `keywords` | 관심 키워드 | 요청 문장에서 뽑아 저장 |
-| `templates` | 출력 형태 (지금은 1종) | 회의에서 1종으로 축소 |
-| **`schedules`** | 언제 어떤 템플릿으로 보낼지 | "정해진 시간에 맞춰서" |
-| `articles` | 수집한 기사 + 본문 | "뉴스 전체를 다 주는지" |
-| `drafts` | 생성된 뉴스레터 | 승인 흐름 |
-| `draft_sources` | 초안 ↔ 근거 기사 연결 | "상세페이지로 넘어갈 수 있게" |
-| **`review_guidelines`** | 검수 지침 | "지침을 줘서 참고해서 검수" |
-| `audit_reports` | 검수 점수 | 프론트 `AuditReport` |
-| `dispatch_logs` | 발송 이력 | 실패 추적 |
+| 테이블 | 역할 |
+|---|---|
+| `articles` | 언론사에서 모아온 기사와 크롤링한 본문. 중복 수집을 막는다 |
+| `drafts` | 만들어진 요약본. 검수 점수·근거 기사·주기·발송 결과까지 한 곳에 |
+
+`articles` 와 `drafts` 사이에 연결 테이블을 두지 않았다.
+근거 기사는 화면에 그대로 뿌리기만 하므로 `drafts.sources` JSON 한 칸이면 충분하다.
+
+### 수신자
+
+로그인이 없고 한 사람에게만 보내므로 DB 를 쓰지 않는다.
+
+```
+# backend/.env
+MAIL_TO=받는사람@example.com
+MAIL_DRY_RUN=true      # true 면 실제로 보내지 않고 기록만 남긴다
+```
 
 ---
 

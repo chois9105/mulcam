@@ -142,6 +142,8 @@ def short_status(status: str):
     return {
         "pending": "승인 대기",
         "approved": "승인 완료",
+        "sent": "발송 완료",
+        "rejected": "거절됨",
         "revision": "수정 중",
     }.get(status, status)
 
@@ -188,6 +190,9 @@ if "active_draft_id" not in st.session_state:
         st.session_state.drafts[0]["id"] if st.session_state.drafts else None
     )
 
+if "view_version" not in st.session_state:
+    st.session_state.view_version = "버전2"
+
 if "advice" not in st.session_state:
     st.session_state.advice = None
 
@@ -208,6 +213,22 @@ st.markdown(
     '<div class="flow">Research → Writer → Reviewer → ⏸ Human Approval → Send</div>',
     unsafe_allow_html=True,
 )
+
+# 회의용 — 두 버전을 골라 보여준다
+ver_col, desc_col = st.columns([1, 3], gap="small")
+with ver_col:
+    st.radio(
+        "화면 버전",
+        ["버전1", "버전2"],
+        horizontal=True,
+        key="view_version",
+        label_visibility="collapsed",
+    )
+with desc_col:
+    if st.session_state.view_version == "버전1":
+        st.caption("버전1 — 제목·요약·검수 점수만 보여준다. 내용은 메일로 확인한다.")
+    else:
+        st.caption("버전2 — 메일로 보내기 전에 뉴스 내용·검수 결과·근거 기사를 화면에서 바로 본다.")
 
 
 # ---------------------------------------------------------
@@ -447,5 +468,53 @@ if active:
         """,
         unsafe_allow_html=True,
     )
+
+    # -----------------------------------------------------
+    # 버전2 — 메일로 보내기 전에 뉴스 내용을 화면에서 바로 본다
+    #
+    # 버전1 은 위의 카드(제목·요약·점수)까지만 보여준다.
+    # 내용을 확인하려면 메일을 열어봐야 했다.
+    # 버전2 는 그 아래에 기사 목록과 근거 링크를 그대로 펼친다.
+    # -----------------------------------------------------
+    if st.session_state.get("view_version") == "버전2":
+        st.markdown("---")
+        st.markdown("#### 📄 뉴스레터 내용")
+        st.caption("승인하면 이 내용이 그대로 메일로 나갑니다.")
+
+        # article_html 에는 근거 기사 목록이 이미 들어 있어 두 번 나온다.
+        # 화면에서는 본문(markdown)만 그리고, 근거는 아래에서 따로 보여준다.
+        markdown_text = active.get("markdown") or ""
+        if markdown_text:
+            st.markdown(markdown_text)
+        elif active.get("article_html"):
+            st.markdown(active["article_html"], unsafe_allow_html=True)
+        else:
+            st.info("아직 내용이 없습니다. ① 에서 요청해 주세요.")
+
+        # 검수 결과
+        audit = active.get("audit_report") or {}
+        if audit:
+            st.markdown("#### 🔍 검수 결과")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("총점", f"{active.get('score', '-')}점")
+            m2.metric("가독성", audit.get("readability", "-"))
+            m3.metric("사실 정확도", audit.get("fact_accuracy", "-"))
+            m4.metric("일관성", audit.get("coherence", "-"))
+            if audit.get("reviewer_comment"):
+                st.caption(f"편집장 의견 · {audit['reviewer_comment']}")
+
+        # 근거 기사
+        sources = active.get("sources") or []
+        if sources:
+            st.markdown("#### 🔗 근거 기사")
+            st.caption("제목을 누르면 원문으로 이동합니다.")
+            for i, s in enumerate(sources, 1):
+                url = s.get("url") or ""
+                title = s.get("title") or ""
+                where = s.get("summary") or s.get("domain") or ""
+                if url:
+                    st.markdown(f"{i}. [{title}]({url})  ·  {where}")
+                else:
+                    st.markdown(f"{i}. {title}  ·  {where}")
 
 st.caption(backend.health_line())

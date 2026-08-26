@@ -232,11 +232,6 @@ st.markdown(
           font-size: 12.5px;
       }
 
-      .preview-meta {
-          color: #9AA1AB;
-          font-size: 12.5px;
-          margin-bottom: 8px;
-      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -963,7 +958,7 @@ if st.session_state.last_api_message:
 
 
 # ============================================================
-# 11. 선택한 뉴스레터 템플릿 / 검수 / 근거 표시
+# 11. 선택한 뉴스레터 템플릿 표시
 # ============================================================
 if drafts:
     st.markdown("---")
@@ -975,22 +970,10 @@ if drafts:
 
     if isinstance(active_detail, dict) and active_detail:
         title = safe_text(first_value(active_detail, ["title", "subject"], "뉴스레터"))
-        status = safe_text(status_label(str(active_detail.get("status", ""))))
-        score = safe_text(active_detail.get("score", "-"))
-        frequency = active_detail.get("frequency")
-        period = safe_text(frequency_label(str(frequency)) if frequency else "-")
-        created_at = safe_text(active_detail.get("created_at", ""))
 
         st.markdown("### ③ 뉴스레터 미리보기")
         st.caption("백엔드가 생성한 HTML 템플릿을 수정하지 않고 표시합니다.")
         st.markdown(f"#### {title}")
-        meta = f"검수 {score}점 · {status} · 주기 {period}"
-        if created_at:
-            meta += f" · {created_at}"
-        st.markdown(
-            f'<div class="preview-meta">{meta}</div>',
-            unsafe_allow_html=True,
-        )
 
         article_html = first_value(
             active_detail,
@@ -1008,66 +991,3 @@ if drafts:
                 st.markdown(markdown_text)
             else:
                 st.info("표시할 뉴스레터 내용이 없습니다.")
-
-        audit = active_detail.get("audit_report") or {}
-        st.markdown("#### 🔍 검수 결과")
-        metric1, metric2, metric3, metric4 = st.columns(4)
-        metric1.metric("총점", active_detail.get("score", "-"))
-        metric2.metric("가독성", audit.get("readability", "-"))
-        metric3.metric("사실 정확도", audit.get("fact_accuracy", "-"))
-        metric4.metric("일관성", audit.get("coherence", "-"))
-        if audit.get("reviewer_comment"):
-            st.caption(f"편집장 의견 · {audit['reviewer_comment']}")
-
-        sources = active_detail.get("sources") or []
-        if sources:
-            with st.expander(f"🔗 근거 기사 {len(sources)}건", expanded=False):
-                for index, source in enumerate(sources, 1):
-                    source_title = source.get("title") or f"기사 {index}"
-                    url = source.get("url") or source.get("link") or ""
-                    media = source.get("summary") or source.get("domain") or ""
-                    if url:
-                        st.markdown(
-                            f"{index}. [{source_title}]({url})  ·  {media}"
-                        )
-                    else:
-                        st.markdown(f"{index}. {source_title}  ·  {media}")
-
-
-# ============================================================
-# 12. API 연동 정보
-# ============================================================
-with st.expander("연동된 Backend API 확인", expanded=False):
-    st.code(
-        f"""Backend Base URL
-{BACKEND_BASE_URL}
-
-① 뉴스레터 요청
-POST /api/newsletter/request
-
-② 수정 요청
-POST /api/drafts/{{draft_id}}/revise
-
-③ 최종 승인 + 주기 설정
-POST /api/drafts/{{draft_id}}/approve
-
-목록 조회
-GET /api/drafts
-
-상세 조회
-GET /api/drafts/{{draft_id}}
-
-상태 확인
-GET /api/status
-""",
-        language="text",
-    )
-
-    spec = get_openapi_spec()
-    if spec:
-        st.success("Backend OpenAPI 문서에 연결되어 있습니다.")
-    else:
-        st.warning(
-            "OpenAPI 문서를 읽지 못했습니다. "
-            "API 요청은 고정된 request_text / direction / frequency 계약으로 계속 동작합니다."
-        )

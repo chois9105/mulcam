@@ -124,7 +124,14 @@ async def approve_newsletter(draft_id: str, req: ApproveRequest):
         if not draft:
             raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
         if draft["status"] in ("approved", "sent"):
-            raise HTTPException(409, "이미 승인된 요약본입니다.")
+            # Streamlit 재실행이나 네트워크 재시도로 같은 승인 요청이 다시
+            # 들어와도 실패로 보지 않는다. 최초 승인 결과를 그대로 돌려준다.
+            res = service.to_response(draft)
+            res["already_approved"] = True
+            res["message"] = (
+                "이미 승인된 요약본입니다. 기존 승인 상태를 유지합니다."
+            )
+            return res
         approved = service.approve(draft_id, req.frequency, req.approved_template)
         res = service.to_response(approved)
         res["message"] = (

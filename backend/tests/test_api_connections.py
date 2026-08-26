@@ -99,6 +99,19 @@ def test_primary_newsletter_endpoints_are_connected(monkeypatch):
     assert ("dispatch_result", "draft_dispatch", True, None) in service.calls
 
 
+def test_approve_is_idempotent_for_an_already_approved_draft(monkeypatch):
+    client, service = client_with_fakes(monkeypatch)
+    service.draft.update({"status": "approved", "frequency": "daily"})
+
+    response = client.post("/api/drafts/draft_1/approve", json={
+        "frequency": "daily", "approved_template": "<article>승인본</article>"
+    })
+
+    assert response.status_code == 200
+    assert response.json()["already_approved"] is True
+    assert not any(call[0] == "approve" for call in service.calls)
+
+
 def test_graph_endpoints_are_connected_without_explicit_thread_id(monkeypatch):
     client, _ = client_with_fakes(monkeypatch)
     graph = SimpleNamespace(

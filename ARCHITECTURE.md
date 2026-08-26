@@ -262,16 +262,17 @@ sequenceDiagram
 
     F->>B: POST /api/newsletter/request
     B->>L: 1 요청 문장 분석 (키워드·독자·개수)
-    B->>B: 2 관련 기사 검색 (FAISS)
-    B->>L: 3 기사별 요약
-    B->>L: 4 한국어 다듬기
-    B->>L: 5 검수 채점
+    B->>B: 2 키워드 실시간 검색 (요청 시점)
+    B->>B: 3 리서치 결과 구성 (저장 색인은 선택 보강)
+    B->>L: 4 기사별 요약
+    B->>L: 5 한국어 다듬기
+    B->>L: 6 검수 채점
     B->>D: drafts 저장 (status pending)
     B-->>F: 요약본 전체 (점수·본문·근거)
 
     opt 마음에 안 들면
         F->>B: POST /api/drafts/{id}/revise
-        B->>L: 같은 기사로 다시 작성 + 재검수
+        B->>L: 직전 리서치·답변으로 다시 작성 + 재검수
         B-->>F: 새 요약본
     end
 

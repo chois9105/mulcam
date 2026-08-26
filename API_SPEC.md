@@ -17,7 +17,7 @@
 ## 화면 버튼 = 엔드포인트 3개
 
 ```
-① 키워드/문장 입력  →  요약본 생성
+① 키워드/문장 입력  →  실시간 검색 → 리서치 → 요약본 생성 → 검수
                         ↓
 ② 읽어보고  [수정 요청]  또는  [최종 승인 + 주기]
                         ↓
@@ -73,6 +73,7 @@ POST /api/newsletter/request
   "frequency_label": null,
   "created_at": "2026.08.26 09:15",
   "revision_count": 0,
+  "pipeline": ["keyword_search", "research", "newsletter", "review"],
 
   "article_html": "<div class=\"article-hero-box\">…</div>",
   "markdown": "# AI IT 주요 뉴스\n\n**IPO 앞둔 오픈AI…** [1]\n…",
@@ -146,7 +147,7 @@ POST /api/drafts/{draft_id}/revise
 **1번과 똑같은 모양**이다. 화면은 카드만 갈아끼우면 된다.
 `revision_count` 가 1 늘어나고 `score` 가 다시 매겨진다.
 
-기사를 새로 찾지 않고 **같은 근거 기사로 다시 쓴다.**
+기사를 새로 찾지 않고 **직전 응답을 만든 리서치 결과와 본문을 기준으로 다시 쓴다.**
 
 ### 오류
 
@@ -169,13 +170,20 @@ POST /api/drafts/{draft_id}/approve
 ### 요청
 
 ```json
-{ "frequency": "daily" }
+{
+  "frequency": "daily",
+  "approved_template": "<article>사용자가 최종 승인한 HTML...</article>"
+}
 ```
 
 | 항목 | 필수 | 기본값 | 설명 |
 |---|---|---|---|
 | `frequency` | — | `daily` | `once` `daily` `weekly` `biweekly` `monthly` |
-| `recipients` | — | `.env` 의 `MAIL_TO` | 받는 사람 목록. 비우면 설정값 사용 |
+| `approved_template` | — | 현재 초안 HTML | 사용자가 최종 승인한 템플릿 HTML |
+
+로그인 화면이 없는 단일 사용자 서비스이므로 승인 시 사용자 이메일은 항상
+`contact@1435.co.kr` 로 저장된다. `frequency`, `approved_template`, `user_email`,
+다음 실행 시각은 MySQL `drafts` 테이블에 영속 저장된다.
 
 ### 응답
 
@@ -187,7 +195,7 @@ POST /api/drafts/{draft_id}/approve
   "frequency": "daily",
   "frequency_label": "매일",
   "approved_at": "2026.08.26 09:20",
-  "schedule_id": 1,
+  "schedule_id": "draft_20260826_091545",
   "message": "승인되었습니다. 주기: 매일",
   "send_result": {
     "sent": true,

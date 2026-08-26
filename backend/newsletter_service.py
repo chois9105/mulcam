@@ -13,6 +13,8 @@ API 층(api_v1.py)은 요청을 받고 이 서비스를 부르기만 한다.
 
 from __future__ import annotations
 
+import calendar
+import logging
 import os
 import re
 from datetime import datetime
@@ -30,6 +32,9 @@ from mailer import send_draft
 from rag_engine import DEFAULT_STYLE, STYLE_PROMPTS, NewsRAG
 from request_analyzer import RequestAnalyzer
 from reviewer import NewsletterReviewer
+
+logger = logging.getLogger(__name__)
+DEFAULT_USER_EMAIL = "contact@1435.co.kr"
 
 # 주기 표시 문구
 FREQUENCY_LABEL = {
@@ -76,8 +81,6 @@ class NewsletterService:
         self._reviewer: Optional[NewsletterReviewer] = None
         self._polisher: Optional[Polisher] = None
         # 저장은 store 가 맡는다 (MySQL 이 준비돼 있으면 MySQL, 아니면 메모리)
-        self._schedules: Dict[int, Dict] = {}
-        self._next_schedule_id = 1
 
     # ---------- 지연 생성 ----------
     @property
@@ -130,17 +133,22 @@ class NewsletterService:
         plan = self.analyzer.analyze(request_text)
         query = self.analyzer.to_query(plan)
 
-        # 2. 기사 모으기 — 두 곳에서 가져와 합친다
+        # 2. 요청 시점 리서치 — 사용자 키워드로 실시간 검색을 먼저 실행한다.
         #
         #    (가) 미리 모아둔 색인 : 국내 16곳, 본문 900자, 원문 링크
         #    (나) 실시간 검색      : 키워드로 지금 찾아옴, 빠짐이 없다
         #
         #    미리 모아둔 것만 쓰면 그 안에 없는 주제를 못 만든다.
         #    실시간만 쓰면 본문이 없어 요약이 얕아진다. 그래서 둘 다 쓴다.
-        indexed = compose.docs_to_items(
-            self.rag.search_multi(plan.keywords, k=plan.article_count)
-        )
         live = live_search.search(plan.keywords, per_keyword=6)
+        indexed = []
+        try:
+            indexed = compose.docs_to_items(
+                self.rag.search_multi(plan.keywords, k=plan.article_count)
+            )
+        except RuntimeError as e:
+            # 색인은 품질 보강용일 뿐 필수 선행조건이 아니다.
+            logger.info("사전 색인 없이 실시간 리서치만 사용합니다: %s", e)
         items = live_search.merge_with_indexed(indexed, live,
                                                limit=plan.article_count)
         if not items:
@@ -181,6 +189,7 @@ class NewsletterService:
             plan=plan,
             query=query,
             title_hint=plan.title_hint,
+            research_items=items,
         )
 
     # ---------- ② 수정 요청 ----------
@@ -188,14 +197,11 @@ class NewsletterService:
         """화면 ②의 '이렇게 바꾸어주세요' 한 칸을 받아 다시 쓴다."""
         draft = store.get_draft(draft_id)
 
-        # 원래 근거 기사를 그대로 다시 쓴다 (검색을 다시 하지 않는다)
-        kws = draft.get("_keywords") or draft["_query"].split()
-        indexed = compose.docs_to_items(
-            self.rag.search_multi(kws, k=draft["_article_count"])
+        # 원래 응답을 만든 리서치 결과를 그대로 사용한다. 수정 요청에서
+        # 재검색하면 근거와 기사 번호가 바뀌어 "이전 답변 기반 수정"이 아니다.
+        items = draft.get("_research_items") or self._items_from_sources(
+            draft.get("sources", [])
         )
-        live = live_search.search(kws, per_keyword=6)
-        items = live_search.merge_with_indexed(indexed, live,
-                                               limit=draft["_article_count"])
         context = compose.format_items(items)
 
         # 기존 요약에 항목이 몇 개였는지 세어, 그 수를 유지하라고 알려준다.
@@ -229,11 +235,12 @@ class NewsletterService:
             draft_id=draft_id,             # 같은 id 에 덮어쓴다
             revision_count=loop,
             direction=direction,
+            research_items=items,
         )
 
     # ---------- ③ 최종 승인 (+ 주기) ----------
     def approve(self, draft_id: str, frequency: str,
-                recipients: List[str] = None) -> Dict:
+                approved_template: str | None = None) -> Dict:
         """승인하고 발송 주기를 저장한다."""
         draft = store.get_draft(draft_id)
         now = datetime.now()
@@ -242,26 +249,25 @@ class NewsletterService:
         draft["approved_at"] = now.strftime("%Y.%m.%d %H:%M")
         draft["frequency"] = frequency
         draft["frequency_label"] = FREQUENCY_LABEL.get(frequency, frequency)
+        draft["user_email"] = DEFAULT_USER_EMAIL
+        draft["approved_template"] = approved_template or draft.get("article_html", "")
+        next_run_at = self._next_run(now, frequency)
 
-        store.mark_approved(draft_id, frequency)
-
-        # 주기 등록. once 면 반복하지 않는다.
-        schedule_id = self._next_schedule_id
-        self._next_schedule_id += 1
-        self._schedules[schedule_id] = {
-            "schedule_id": schedule_id,
-            "draft_id": draft_id,
-            "request_text": draft.get("_request_text"),
-            "frequency": frequency,
-            "recipients": recipients or [],
-            "is_active": frequency != "once",
-            "created_at": now.strftime("%Y.%m.%d %H:%M"),
-        }
-        draft["schedule_id"] = schedule_id
+        store.mark_approved(
+            draft_id,
+            frequency,
+            user_email=DEFAULT_USER_EMAIL,
+            approved_template=draft["approved_template"],
+            next_run_at=next_run_at,
+        )
+        draft["schedule_id"] = draft_id if frequency != "once" else None
+        draft["next_run_at"] = (
+            next_run_at.strftime("%Y.%m.%d %H:%M") if next_run_at else None
+        )
 
         # 승인했으니 바로 한 통 보낸다.
         # MAIL_DRY_RUN=true 면 실제로 나가지 않고 보낼 내용만 알려준다.
-        result = send_draft(draft, to=(recipients or [None])[0])
+        result = send_draft(draft, to=DEFAULT_USER_EMAIL)
         draft["send_result"] = result
         if result.get("sent"):
             draft["status"] = "sent"
@@ -272,7 +278,19 @@ class NewsletterService:
         return draft
 
     def schedules(self) -> List[Dict]:
-        return list(self._schedules.values())
+        return store.list_schedules()
+
+    def due_schedules(self, now: datetime | None = None) -> List[Dict]:
+        return store.list_schedules(due_at=now or datetime.now())
+
+    def mark_schedule_run(self, draft_id: str, frequency: str,
+                          now: datetime | None = None) -> None:
+        current = now or datetime.now()
+        store.mark_schedule_run(
+            draft_id,
+            last_run_at=current,
+            next_run_at=self._next_run(current, frequency),
+        )
 
     def reject(self, draft_id: str) -> Dict:
         draft = store.get_draft(draft_id)
@@ -322,10 +340,38 @@ class NewsletterService:
         out = re.sub(r"\[\[#(\d+)\]\]", lambda m: f"[{m.group(1)}]", out)
         return out, kept
 
+    @staticmethod
+    def _items_from_sources(sources: List[Dict]) -> List[Dict]:
+        """구버전 DB 초안도 재검색 없이 수정할 수 있게 최소 근거를 복원한다."""
+        return [{
+            "title": s.get("title", ""),
+            "link": s.get("url", s.get("link", "")),
+            "source": s.get("summary", s.get("source", "")),
+            "published": s.get("published", ""),
+            "description": s.get("description", ""),
+            "content": s.get("content", ""),
+            "has_full_text": bool(s.get("content")),
+            "live": s.get("live", False),
+        } for s in sources]
+
+    @staticmethod
+    def _next_run(now: datetime, frequency: str) -> datetime | None:
+        from datetime import timedelta
+
+        days = {"daily": 1, "weekly": 7, "biweekly": 14}
+        if frequency in days:
+            return now + timedelta(days=days[frequency])
+        if frequency == "monthly":
+            year = now.year + (1 if now.month == 12 else 0)
+            month = 1 if now.month == 12 else now.month + 1
+            day = min(now.day, calendar.monthrange(year, month)[1])
+            return now.replace(year=year, month=month, day=day)
+        return None
+
     # ---------- 저장 ----------
     def _save(self, *, markdown, sources, review, audit, request_text,
               plan, query, title_hint, draft_id=None,
-              revision_count=0, direction=None) -> Dict:
+              revision_count=0, direction=None, research_items=None) -> Dict:
         now = datetime.now()
         if draft_id is None:
             draft_id = f"draft_{now:%Y%m%d_%H%M%S}"
@@ -348,12 +394,14 @@ class NewsletterService:
             "markdown": markdown,
             "audit_report": audit,
             "sources": to_research_sources(sources),
+            "pipeline": ["keyword_search", "research", "newsletter", "review"],
 
             # 내부용 (응답에서는 빼고 내보낸다)
             "_request_text": request_text,
             "_query": query,
             "_keywords": (plan.keywords if plan else None),
             "_article_count": article_count,
+            "_research_items": research_items or [],
             "_last_direction": direction,
         }
         store.save_draft(draft)

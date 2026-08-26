@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import sys
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from database import (
     Base, DB_NAME, check_connection, create_database_if_missing, engine, session_scope,
@@ -65,6 +65,20 @@ def main() -> int:
     # 3. 테이블 생성 -------------------------------------------------
     step("3. 테이블 생성")
     Base.metadata.create_all(engine)
+    # create_all은 기존 테이블에 새 컬럼을 추가하지 않으므로 가벼운 인라인
+    # 마이그레이션을 수행한다. 이미 컬럼이 있으면 건너뛴다.
+    draft_columns = {c["name"] for c in inspect(engine).get_columns("drafts")}
+    migrations = {
+        "research_items": "ADD COLUMN research_items JSON NULL",
+        "user_email": "ADD COLUMN user_email VARCHAR(255) NULL",
+        "approved_template": "ADD COLUMN approved_template MEDIUMTEXT NULL",
+        "next_run_at": "ADD COLUMN next_run_at DATETIME NULL",
+        "last_scheduled_at": "ADD COLUMN last_scheduled_at DATETIME NULL",
+    }
+    with engine.begin() as conn:
+        for name, ddl in migrations.items():
+            if name not in draft_columns:
+                conn.execute(text(f"ALTER TABLE drafts {ddl}"))
     tables = sorted(inspect(engine).get_table_names())
     print(f"  테이블 {len(tables)}개")
     for t in tables:

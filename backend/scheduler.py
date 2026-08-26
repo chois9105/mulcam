@@ -97,11 +97,13 @@ def run_scheduled_dispatch() -> List[Dict]:
     from newsletter_service import service
 
     results = []
-    for sch in service.schedules():
+    now = datetime.now()
+    for sch in service.due_schedules(now):
         if not sch.get("is_active"):
             continue
         try:
             draft = service.create(sch["request_text"])
+            service.mark_schedule_run(sch["draft_id"], sch["frequency"], now)
             results.append({
                 "schedule_id": sch["schedule_id"],
                 "new_draft_id": draft["id"],

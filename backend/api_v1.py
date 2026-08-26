@@ -12,7 +12,7 @@ AgentLetter Compact 화면의 버튼 세 개에 하나씩 대응한다.
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -51,8 +51,9 @@ class ReviseRequest(BaseModel):
 class ApproveRequest(BaseModel):
     """③ 최종 승인 — 주기를 함께 받는다"""
     frequency: Frequency = Field("daily", description="발송 주기")
-    recipients: Optional[List[str]] = Field(
-        default=None, description="받는 사람 메일. 비우면 .env 기본값을 쓴다."
+    approved_template: Optional[str] = Field(
+        default=None,
+        description="사용자가 승인한 최종 HTML. 비우면 현재 초안의 HTML을 저장한다.",
     )
 
 
@@ -91,7 +92,7 @@ async def revise_newsletter(draft_id: str, req: ReviseRequest):
     draft = service.get(draft_id)
     if not draft:
         raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
-    if draft["status"] == "approved":
+    if draft["status"] in ("approved", "sent"):
         raise HTTPException(409, "이미 승인된 요약본은 수정할 수 없습니다.")
 
     try:
@@ -114,11 +115,11 @@ async def approve_newsletter(draft_id: str, req: ApproveRequest):
     draft = service.get(draft_id)
     if not draft:
         raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
-    if draft["status"] == "approved":
+    if draft["status"] in ("approved", "sent"):
         raise HTTPException(409, "이미 승인된 요약본입니다.")
 
     try:
-        approved = service.approve(draft_id, req.frequency, req.recipients)
+        approved = service.approve(draft_id, req.frequency, req.approved_template)
         res = service.to_response(approved)
         res["message"] = (
             f"승인되었습니다. 주기: {FREQUENCY_LABEL.get(req.frequency, req.frequency)}"

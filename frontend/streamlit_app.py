@@ -18,12 +18,11 @@ python -m streamlit run streamlit_app.py
 
 import html
 import re
-import time
 from datetime import datetime
 
 import streamlit as st
 
-from agent_graph import workflow_engine
+import backend_client as backend
 
 
 # ---------------------------------------------------------
@@ -177,38 +176,17 @@ if "frequency" not in st.session_state:
     st.session_state.frequency = "daily"
 
 if "drafts" not in st.session_state:
-    samples = [
-        (
-            "draft-001",
-            "LangGraph와 Human-in-the-Loop의 최신 실무 적용 사례를 간단한 뉴스레터로 정리해 주세요.",
-            ["LangGraph", "Human-in-the-Loop"],
-            "daily",
-        ),
-        (
-            "draft-002",
-            "FastAPI와 AI Agent를 연결할 때 알아야 할 핵심 내용을 정리해 주세요.",
-            ["FastAPI", "AI Agent"],
-            "weekly",
-        ),
-        (
-            "draft-003",
-            "AWS EventBridge를 이용한 AI 자동화 운영 사례를 정리해 주세요.",
-            ["AWS EventBridge", "AI 자동화"],
-            "weekly",
-        ),
-    ]
-    st.session_state.drafts = [
-        workflow_engine.run_pipeline(
-            draft_id,
-            keywords,
-            frequency,
-            request_text=request_text,
-        )
-        for draft_id, request_text, keywords, frequency in samples
-    ]
+    # 백엔드에 이미 만들어 둔 요약본이 있으면 가져온다.
+    # 없으면 빈 목록으로 시작한다 (가짜 샘플을 만들지 않는다).
+    try:
+        st.session_state.drafts = backend.list_drafts()
+    except Exception:
+        st.session_state.drafts = []
 
 if "active_draft_id" not in st.session_state:
-    st.session_state.active_draft_id = st.session_state.drafts[0]["id"]
+    st.session_state.active_draft_id = (
+        st.session_state.drafts[0]["id"] if st.session_state.drafts else None
+    )
 
 if "last_request" not in st.session_state:
     st.session_state.last_request = ""
@@ -261,25 +239,25 @@ with input1_col:
                 keywords = extract_keywords(newsletter_request)
 
                 with st.status(
-                    "Research → Writer → Reviewer 실행 중",
+                    "Research → Writer → Reviewer 실행 중 (10~20초)",
                     expanded=False,
                 ) as status:
-                    time.sleep(0.25)
-                    new_draft = workflow_engine.run_pipeline(
-                        new_id,
-                        keywords,
-                        st.session_state.frequency,
-                        request_text=newsletter_request.strip(),
-                    )
-                    status.update(
-                        label="✅ 생성 완료 · 인간 승인 대기",
-                        state="complete",
-                    )
+                    try:
+                        new_draft = backend.create(newsletter_request.strip())
+                        status.update(
+                            label=f"✅ 생성 완료 · 검수 {new_draft['score']}점 · 인간 승인 대기",
+                            state="complete",
+                        )
+                    except backend.BackendError as e:
+                        status.update(label="❌ 생성 실패", state="error")
+                        st.error(str(e))
+                        new_draft = None
 
-                st.session_state.drafts.insert(0, new_draft)
-                st.session_state.active_draft_id = new_id
-                st.session_state.last_request = newsletter_request.strip()
-                st.rerun()
+                if new_draft:
+                    st.session_state.drafts.insert(0, new_draft)
+                    st.session_state.active_draft_id = new_draft["id"]
+                    st.session_state.last_request = newsletter_request.strip()
+                    st.rerun()
 
 
 # 입력항목 2 - 수정 요청 / 최종 승인 / 주기
@@ -295,20 +273,26 @@ with input2_col:
             d["id"]: d["title"] for d in st.session_state.drafts
         }
 
-        if st.session_state.active_draft_id not in draft_options_for_feedback:
-            st.session_state.active_draft_id = draft_options_for_feedback[0]
+        if draft_options_for_feedback:
+            if st.session_state.active_draft_id not in draft_options_for_feedback:
+                st.session_state.active_draft_id = draft_options_for_feedback[0]
 
-        active_index = draft_options_for_feedback.index(
-            st.session_state.active_draft_id
-        )
-
-        target_id = st.selectbox(
-            "수정/승인 대상 뉴스",
-            draft_options_for_feedback,
-            index=active_index,
-            format_func=lambda draft_id: feedback_title_map[draft_id],
-        )
-        st.session_state.active_draft_id = target_id
+            active_index = draft_options_for_feedback.index(
+                st.session_state.active_draft_id
+            )
+            target_id = st.selectbox(
+                "수정/승인 대상 뉴스",
+                draft_options_for_feedback,
+                index=active_index,
+                format_func=lambda draft_id: feedback_title_map[draft_id],
+            )
+            st.session_state.active_draft_id = target_id
+        else:
+            st.selectbox(
+                "수정/승인 대상 뉴스",
+                ["— 아직 만들어진 뉴스레터가 없습니다 —"],
+                disabled=True,
+            )
 
         # PPT 요청: 파란 박스의 두 입력창을 하나로 합침
         change_request = st.text_area(
@@ -351,43 +335,46 @@ with input2_col:
             if not change_request.strip():
                 st.warning("'이렇게 바꾸어주세요'에 수정 요청 내용을 입력해 주세요.")
             else:
-                feedback = f"[수정 요청] {change_request.strip()}"
-                try:
-                    updated = workflow_engine.resume_revision(
-                        active["id"],
-                        feedback,
-                    )
-                    # 현재 선택한 주기도 결과에 반영
-                    updated["frequency"] = st.session_state.frequency
-                    if active["id"] in workflow_engine.checkpoints:
-                        workflow_engine.checkpoints[active["id"]]["frequency"] = st.session_state.frequency
-                    replace_draft(updated)
-                    st.session_state.active_draft_id = updated["id"]
-                    st.success("Writer → Reviewer 재실행을 완료했습니다.")
-                    st.rerun()
-                except KeyError:
-                    st.error(
-                        "해당 초안의 체크포인트를 찾지 못했습니다. "
-                        "새 뉴스레터를 다시 생성해 주세요."
-                    )
+                with st.spinner("Writer → Reviewer 재실행 중 (10~20초)"):
+                    try:
+                        updated = backend.revise(active["id"], change_request.strip())
+                        updated["frequency"] = st.session_state.frequency
+                        replace_draft(updated)
+                        st.session_state.active_draft_id = updated["id"]
+                        st.success(
+                            f"다시 작성했습니다. 검수 {updated['score']}점 "
+                            f"(수정 {updated.get('revision_count', 0)}회)"
+                        )
+                        st.rerun()
+                    except backend.BackendError as e:
+                        st.error(str(e))
 
         if approve and active:
-            try:
-                # 최종 승인 직전 선택한 주기를 체크포인트에 반영
-                if active["id"] in workflow_engine.checkpoints:
-                    workflow_engine.checkpoints[active["id"]]["frequency"] = st.session_state.frequency
-                updated = workflow_engine.resume_approval(active["id"])
-                updated["frequency"] = st.session_state.frequency
-                replace_draft(updated)
-                st.success(
-                    f"최종 승인되었습니다. 발송 주기: {frequency_label(st.session_state.frequency)}"
-                )
-                st.rerun()
-            except KeyError:
-                st.error(
-                    "해당 초안의 체크포인트를 찾지 못했습니다. "
-                    "새 뉴스레터를 다시 생성해 주세요."
-                )
+            with st.spinner("승인 처리 및 발송 중"):
+                try:
+                    updated = backend.approve(active["id"], st.session_state.frequency)
+                    replace_draft(updated)
+
+                    sent = updated.get("send_result") or {}
+                    if sent.get("sent"):
+                        st.success(
+                            f"최종 승인 후 {sent.get('count', 0)}명에게 발송했습니다. "
+                            f"주기: {frequency_label(st.session_state.frequency)}"
+                        )
+                    elif sent.get("dry_run"):
+                        st.success(
+                            f"최종 승인되었습니다. 주기: "
+                            f"{frequency_label(st.session_state.frequency)}"
+                        )
+                        st.caption("발송 안전장치가 켜져 있어 메일은 나가지 않았습니다.")
+                    else:
+                        st.warning(
+                            "승인은 되었으나 발송에 실패했습니다: "
+                            + str(sent.get("reason", ""))
+                        )
+                    st.rerun()
+                except backend.BackendError as e:
+                    st.error(str(e))
 
 
 # ---------------------------------------------------------
@@ -418,7 +405,4 @@ if active:
         unsafe_allow_html=True,
     )
 
-st.caption(
-    "현재 리서치/작성/검수 내용과 발송은 데모 로직입니다. "
-    "실제 외부 뉴스 검색·LLM·AWS SES 연동은 별도 연결이 필요합니다."
-)
+st.caption(backend.health_line())

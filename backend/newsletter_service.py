@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 
 from adapters import extract_summary, extract_title, to_research_sources
@@ -33,8 +34,13 @@ from rag_engine import DEFAULT_STYLE, STYLE_PROMPTS, NewsRAG
 from request_analyzer import RequestAnalyzer
 from reviewer import NewsletterReviewer
 
+load_dotenv()
 logger = logging.getLogger(__name__)
-DEFAULT_USER_EMAIL = "contact@1435.co.kr"
+# 로그인 화면이 없는 단일 사용자 서비스라 승인자 메일은 하나로 고정한다.
+# .env 의 MAIL_TO 를 넣어두면 그쪽으로 간다. (팀원별 로컬 시연용)
+DEFAULT_USER_EMAIL = (
+    os.getenv("MAIL_TO", "").split(",")[0].strip() or "contact@1435.co.kr"
+)
 
 # 주기 표시 문구
 FREQUENCY_LABEL = {

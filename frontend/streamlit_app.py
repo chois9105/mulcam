@@ -188,6 +188,14 @@ if "active_draft_id" not in st.session_state:
         st.session_state.drafts[0]["id"] if st.session_state.drafts else None
     )
 
+if "advice" not in st.session_state:
+    st.session_state.advice = None
+
+# 추천 요청문을 눌렀을 때는 다음 실행에서 입력칸에 채운다.
+# (Streamlit 은 위젯이 그려진 뒤에 그 키를 바꿀 수 없다)
+if st.session_state.get("pending_request"):
+    st.session_state.newsletter_request_input = st.session_state.pop("pending_request")
+
 if "last_request" not in st.session_state:
     st.session_state.last_request = ""
 
@@ -225,11 +233,45 @@ with input1_col:
         )
 
         # PPT 요청: '주기'는 이 영역에서 제거
-        generate = st.button(
-            "🚀 뉴스레터 요청",
-            type="primary",
-            use_container_width=True,
-        )
+        # 초보자 도우미 — 무엇을 적어야 할지 모를 때 되물어 준다
+        help_col, gen_col = st.columns([1, 1.6], gap="small")
+        with help_col:
+            ask_help = st.button("💡 뭘 적을지 모르겠어요", use_container_width=True)
+        with gen_col:
+            generate = st.button(
+                "🚀 뉴스레터 요청",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if ask_help:
+            if not newsletter_request.strip():
+                st.warning("먼저 관심 있는 주제를 한 단어라도 적어 주세요. 예) 로봇")
+            else:
+                with st.spinner("편집장이 되묻는 중"):
+                    try:
+                        st.session_state.advice = backend.advise(
+                            newsletter_request.strip()
+                        )
+                    except backend.BackendError as e:
+                        st.error(str(e))
+
+        # 되묻기 결과 표시
+        adv = st.session_state.get("advice")
+        if adv:
+            st.markdown("**이런 점을 정해 보시면 좋습니다**")
+            for q in adv.get("questions", []):
+                st.markdown(f"- {q}")
+
+            st.markdown("**그대로 눌러 쓰셔도 됩니다**")
+            for i, sug in enumerate(adv.get("suggestions", [])):
+                if st.button(sug, key=f"sug_{i}", use_container_width=True):
+                    st.session_state.pending_request = sug
+                    st.session_state.advice = None
+                    st.rerun()
+
+            if adv.get("note"):
+                st.caption(adv["note"])
 
         if generate:
             if not newsletter_request.strip():
@@ -257,6 +299,7 @@ with input1_col:
                     st.session_state.drafts.insert(0, new_draft)
                     st.session_state.active_draft_id = new_draft["id"]
                     st.session_state.last_request = newsletter_request.strip()
+                    st.session_state.advice = None
                     st.rerun()
 
 

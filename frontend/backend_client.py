@@ -111,6 +111,14 @@ def approve(draft_id: str, frequency: str = "daily") -> Dict:
 # ------------------------------------------------------------------
 # 보조
 # ------------------------------------------------------------------
+def advise(keyword: str) -> Dict:
+    """
+    ① 보조 — 키워드를 넣으면 되묻는 질문 3가지와 추천 요청문 3가지를 준다.
+    초보자가 무엇을 적어야 할지 모를 때 쓴다.
+    """
+    return _post("/api/newsletter/advise", {"keyword": keyword}, timeout=60)
+
+
 def list_drafts() -> List[Dict]:
     """이미 만들어 둔 요약본 목록. 화면을 새로 열어도 남아 있게 한다."""
     data = _get("/api/drafts")

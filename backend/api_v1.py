@@ -206,3 +206,38 @@ async def graph_resume(thread_id: str, req: GraphResumeRequest):
 async def graph_state(thread_id: str):
     import graph_pipeline as gp
     return gp.state_of(thread_id)
+
+# ------------------------------------------------------------------
+# 요청 다듬기 도우미
+#
+# 초보자는 무엇을 어떻게 적어야 할지 모른다. '로봇' 이라고만 적으면
+# 결과가 뭉뚱그려진다. 편집장이 데스크에서 묻듯 되물어 준다.
+# ------------------------------------------------------------------
+class AdviseRequest(BaseModel):
+    keyword: str = Field(..., min_length=1,
+                         description="사용자가 적은 주제나 키워드",
+                         examples=["로봇"])
+
+
+@router.post("/newsletter/advise", summary="① 보조 - 되묻기 3가지 + 추천 요청문 3가지")
+async def advise_request(req: AdviseRequest):
+    """
+    키워드를 넣으면 무엇을 보고 싶은지 좁히도록 돕는다.
+
+    - questions   : 생각을 정리하도록 돕는 질문 3개
+    - suggestions : 그대로 넣으면 되는 요청문 3개
+    - note        : 한 줄 안내
+    """
+    try:
+        import advisor
+        a = advisor.advise(req.keyword)
+        return {
+            "keyword": req.keyword,
+            "questions": a.questions,
+            "suggestions": a.suggestions,
+            "note": a.note,
+        }
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"제안 생성에 실패했습니다: {e}")

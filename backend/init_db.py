@@ -23,7 +23,8 @@ import sys
 from sqlalchemy import inspect
 
 from database import (
-    Base, DB_NAME, check_connection, create_database_if_missing, engine, session_scope,
+    DB_NAME, check_connection, create_database_if_missing, engine, ensure_schema,
+    session_scope,
 )
 from db_models import Article, Draft  # noqa: F401  (import 해야 테이블이 등록된다)
 
@@ -64,7 +65,9 @@ def main() -> int:
 
     # 3. 테이블 생성 -------------------------------------------------
     step("3. 테이블 생성")
-    Base.metadata.create_all(engine)
+    schema = ensure_schema()
+    if schema["applied"]:
+        print("  추가 컬럼: " + ", ".join(schema["applied"]))
     tables = sorted(inspect(engine).get_table_names())
     print(f"  테이블 {len(tables)}개")
     for t in tables:

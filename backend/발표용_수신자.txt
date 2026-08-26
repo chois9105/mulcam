@@ -1,0 +1,6 @@
+발표 시연 때 팀원 3명에게 보내려면 backend/.env 의 MAIL_TO 를 아래로 바꾸세요.
+
+MAIL_TO=moonlight.cda007@gmail.com,giannebaba@gmail.com,linkcontent7@gmail.com
+
+바꾼 뒤 백엔드를 재시작해야 반영됩니다.
+평소 테스트 중에는 본인 주소만 두는 편이 좋습니다.

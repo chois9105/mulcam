@@ -69,6 +69,7 @@ class Draft(Base):
     markdown = Column(MEDIUMTEXT)        # 원본
     article_html = Column(MEDIUMTEXT)    # 화면용
     sources = Column(JSON)               # 근거 기사 목록 (제목·매체·원문링크)
+    research_items = Column(JSON)        # 수정 시 재검색하지 않도록 원래 리서치 결과 보존
 
     # 검수 (audit_reports 테이블을 흡수)
     score = Column(Integer, default=0)
@@ -83,7 +84,11 @@ class Draft(Base):
     revision_count = Column(Integer, default=0)
     last_direction = Column(Text)                    # 마지막 수정 요청 문구
     frequency = Column(String(20))                   # once/daily/weekly/biweekly/monthly
+    user_email = Column(String(255))                  # 로그인 없는 단일 사용자 식별자
+    approved_template = Column(MEDIUMTEXT)            # 사용자가 승인한 최종 HTML 템플릿
     created_at = Column(DateTime, default=datetime.now)
     approved_at = Column(DateTime)
+    next_run_at = Column(DateTime)                    # 다음 실시간 수집 요청 시각
+    last_scheduled_at = Column(DateTime)              # 마지막 정기 생성 시각
     sent_at = Column(DateTime)
     send_error = Column(String(500))                 # 발송 실패 사유

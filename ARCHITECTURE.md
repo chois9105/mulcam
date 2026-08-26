@@ -40,7 +40,7 @@
 
 ```mermaid
 flowchart TB
-    subgraph FE["프론트엔드 :8000 (dynapark-yj)"]
+    subgraph FE["화면 (백엔드가 함께 제공)"]
         UI["대시보드 화면"]
     end
 
@@ -62,7 +62,7 @@ flowchart TB
     RSS["국내 언론 RSS 16곳"]
     LLM["OpenAI API"]
 
-    UI -->|HTTP + CORS| API
+    UI -->|HTTP| API
     API --> PIPE
     SCH -->|정해진 시각| PIPE
     P1 --> RSS
@@ -82,9 +82,9 @@ flowchart TB
 | 2. 본문 | 링크를 따라가 기사 본문 추출 (RSS는 60자만 줌) | 완료 |
 | 3. 색인 | 임베딩 → FAISS 검색 | 완료 |
 | 4. 작성 | 기사별 제목 + 한두 문장으로 요약 | 완료 |
-| 5. 윤문 | 어색한 한국어 교정 | **신규** |
-| 6. 검수 | **지침**에 따라 채점 | 지침 DB 연결 필요 |
-| 7. 발송 | 승인된 것만 이메일 | 수신자 연결 필요 |
+| 5. 윤문 | 어색한 한국어 교정 | 완료 (`polisher.py`) |
+| 6. 검수 | 별도 모델이 채점 | 완료 (`reviewer.py`) |
+| 7. 발송 | 승인된 것만 이메일 | 완료 (`mailer.py`) |
 
 ---
 
@@ -203,113 +203,150 @@ MAIL_DRY_RUN=true      # true 면 실제로 보내지 않고 기록만 남긴다
 
 ## 5. API 엔드포인트 (3개)
 
-> **2026-08-25 회의에서 3개로 확정.**
-> 이전 판에는 23개로 적혀 있었으나, 그것은 지금 쓰지 않는 예전 화면
-> (`frontend/main.py`)을 기준으로 잡은 것이었다.
-> 새 화면(AgentLetter Compact)에는 버튼이 세 개뿐이다.
->
-> 자세한 요청·응답 형식은 **API_SPEC.md** 에 있다.
+> **2026-08-26 갱신.** 실제 구현·배포된 경로다.
+> 팀장 요청에 따라 모든 경로는 `/api` 로 시작한다.
+> 요청·응답 형식은 **API_SPEC.md** 에 있다.
 
-| # | 이름 | 엔드포인트 | 화면 위치 |
+| # | 화면 버튼 | 엔드포인트 | 본문 |
 |---|---|---|---|
-| 1 | 주제 선정 | `POST /api/newsletter/request` | ① 뉴스레터 요청 |
-| 2 | 승인 | `POST /api/drafts/{id}/decision` | ② 수정 요청 / 최종 승인 |
-| 3 | 주기 설정과 발송 | `POST /api/schedule` | ① 주기 |
+| 1 | 🚀 뉴스레터 요청 | `POST /api/newsletter/request` | `{ request_text }` |
+| 2 | ↺ 수정 요청 | `POST /api/drafts/{draft_id}/revise` | `{ direction }` |
+| 3 | ✅ 최종 승인 | `POST /api/drafts/{draft_id}/approve` | `{ frequency }` |
+
+조회용
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/drafts` | 목록 (② 드롭다운, ③ 카드) |
+| GET | `/api/drafts/{draft_id}` | 상세 |
+| GET | `/api/status` | 저장소·스케줄러 상태 |
+| POST | `/api/news/collect` | 뉴스 수집 수동 실행 (평소엔 스케줄러) |
+
+LangGraph (과제 요구사항 시연용)
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| POST | `/api/graph/start` | 실행 → 인간 승인 노드에서 중단 |
+| POST | `/api/graph/{thread_id}/resume` | approve / revise / reject 로 재개 |
+| GET | `/api/graph/{thread_id}` | 지금 멈춰 있는 노드 확인 |
 
 ### 설계 원칙
 
 1. **사용자가 누르는 버튼 하나 = 엔드포인트 하나.** 화면에 없는 기능은 만들지 않는다.
-2. **내부 단계는 엔드포인트로 만들지 않는다.** 파이프라인이 7단계라고 해서
-   프론트가 7번 호출하게 하면 순서와 실패 처리를 프론트가 떠안게 된다.
+2. **내부 단계는 엔드포인트로 만들지 않는다.** 파이프라인이 여러 단계라고 해서
+   프론트가 여러 번 호출하게 하면 순서와 실패 처리를 프론트가 떠안게 된다.
    프론트는 "무엇을 원하는지"만 말하고, "어떻게 하는지"는 백엔드가 감춘다.
-3. **응답에 초안 전체를 담는다.** 제목·요약·점수·본문 HTML·검수 결과·근거 기사를
-   한 번에 주면 조회 엔드포인트가 따로 필요 없다.
+3. **응답에 요약본 전체를 담는다.** 제목·요약·점수·본문 HTML·검수 결과·근거 기사를
+   한 번에 주므로 화면이 추가로 물어볼 일이 없다.
 4. **느린 일은 뒤로 뺀다.** 기사 수집·색인은 1~2분 걸리므로 스케줄러가 미리 돌린다.
-   요청 버튼은 몇 초 만에 응답한다.
+   요청 버튼은 10~20초 안에 응답한다.
 
-### 승인과 수정을 한 엔드포인트로 묶은 이유
+### 수정과 승인을 나눈 이유
 
-화면 ②는 같은 자리에서 **수정 요청**과 **최종 승인** 중 하나를 고르게 되어 있다.
-사람이 판단하는 한 단계의 두 갈래이므로 `action` 으로 구분한다.
-(팀원 `newsletter.py` 의 `human_approval` 노드도 approve/revise/reject 로 같은 구조다.)
+처음에는 하나로 묶으려 했으나, 화면에 **[수정 요청]** 과 **[최종 승인]** 버튼이
+따로 있고 주기 선택이 승인 옆에 붙어 있어 두 개로 나눴다.
 
-### 나중에 추가할 것
-
-| 엔드포인트 | 언제 |
-|---|---|
-| `GET /api/drafts` | 새로고침해도 목록이 남아야 할 때 |
-| `POST /api/news/collect` | 기사 수집을 수동으로 돌릴 때 |
+---
 
 ## 6. 주요 흐름
 
-### 초안 생성
+### 뉴스레터 요청 → 승인 → 발송
 
 ```mermaid
 sequenceDiagram
-    participant F as 프론트 8000
-    participant B as 백엔드 8001
+    participant F as 화면
+    participant B as 백엔드
     participant D as MySQL
     participant L as OpenAI
+    participant M as 메일
 
-    F->>B: POST /api/generate (template_code b, keywords AI)
-    B->>D: 템플릿 b 조회
-    B->>D: 검수 지침 조회
-    B->>B: 관련 기사 검색 FAISS
-    B->>L: 4 작성 - 템플릿 프롬프트
-    B->>L: 5 윤문 - 한국어 교정
-    B->>L: 6 검수 - 지침 기준 채점
-    alt 점수 미달 그리고 재시도 2회 미만
-        B->>L: 다시 작성
+    F->>B: POST /api/newsletter/request
+    B->>L: 1 요청 문장 분석 (키워드·독자·개수)
+    B->>B: 2 키워드 실시간 검색 (요청 시점)
+    B->>B: 3 리서치 결과 구성 (저장 색인은 선택 보강)
+    B->>L: 4 기사별 요약
+    B->>L: 5 한국어 다듬기
+    B->>L: 6 검수 채점
+    B->>D: drafts 저장 (status pending)
+    B-->>F: 요약본 전체 (점수·본문·근거)
+
+    opt 마음에 안 들면
+        F->>B: POST /api/drafts/{id}/revise
+        B->>L: 직전 리서치·답변으로 다시 작성 + 재검수
+        B-->>F: 새 요약본
     end
-    B->>D: drafts, draft_sources, audit_reports 저장
-    B-->>F: NewsletterDraft (status pending)
+
+    F->>B: POST /api/drafts/{id}/approve (주기)
+    B->>D: status approved, 주기 저장
+    B->>M: 메일 발송
+    B-->>F: 발송 결과
 ```
 
-### 예약 발송
+### LangGraph 파이프라인 (과제 요구사항)
+
+```mermaid
+flowchart LR
+    S((시작)) --> A[분석]
+    A --> R[리서치]
+    R --> W[작성]
+    W --> V[검수]
+    V -->|품질 미달<br/>재작성 2회 미만| BP[횟수 증가]
+    BP --> W
+    V -->|통과 또는 2회 초과| H[인간 승인 대기]
+    H -->|수정| BP
+    H -->|승인| SD[발송]
+    H -->|거절| RJ[종료]
+    SD --> E((끝))
+    RJ --> E
+```
+
+**인간 승인 대기**에서 그래프가 멈춘다. 상태는 체크포인트에 저장되고,
+사람이 버튼을 누르면 그 자리에서 이어서 실행된다.
+
+### 자동 실행
 
 ```mermaid
 sequenceDiagram
     participant S as 스케줄러
-    participant D as MySQL
     participant B as 파이프라인
-    participant M as 메일서버
+    participant D as MySQL
 
-    S->>D: 현재 시각에 해당하는 schedules 조회
-    loop 구독자별
-        S->>D: 키워드와 템플릿 조회
-        S->>B: 초안 생성 1~7단계
-        B->>D: draft 저장 pending
-    end
-    Note over S,D: 사람이 승인할 때까지 대기
-    S->>M: 승인된 초안만 발송
-    M-->>D: dispatch_logs 기록
+    Note over S: 매일 07/12/18시
+    S->>B: 뉴스 수집 → 본문 크롤링 → 색인
+    B->>D: articles 저장
+
+    Note over S: 매일 08:30
+    S->>B: 주기가 걸린 요청으로 요약본 생성
+    B->>D: drafts 저장 (승인 대기)
+    Note over S,D: 사람이 승인해야 발송된다
 ```
 
 ---
 
-## 7. 앞으로 할 일
+## 7. 현재 상태
 
-| 순서 | 작업 | 산출물 | 난이도 |
-|---|---|---|---|
-| **1** | MySQL 연결 | `database.py`, `models_db.py` (SQLAlchemy) | 보통 |
-| **2** | 테이블 생성 + 기본 템플릿 시드 | `templates_seed.py`, `init_db.py` | 쉬움 |
-| **3** | 템플릿 CRUD | `/api/templates/*` | 쉬움 |
-| **4** | 구독자·키워드 CRUD | `/api/subscribers/*`, `/api/keywords/*` | 쉬움 |
-| **5** | 기사·초안을 DB에 저장 | 기존 메모리 코드를 DB로 이전 | 보통 |
-| **6** | **한국어 윤문 단계** | `polisher.py` | 보통 |
-| **7** | **지침 기반 검수** | `reviewer.py` 수정 + `/api/guidelines/*` | 보통 |
-| **8** | 승인·수정 흐름 | `/api/drafts/{id}/approve`, `/revise` | 보통 |
-| **9** | 이메일 발송 + 이력 | `/api/drafts/{id}/dispatch` | 보통 |
-| **10** | 스케줄러 | APScheduler | 보통 |
+| 단계 | 상태 | 확인 방법 |
+|---|---|---|
+| 뉴스 수집 (16개 매체) | 완료 | 한 번에 135~181건 |
+| 기사 본문 크롤링 | 완료 | 성공률 99~100% |
+| RAG 색인·검색 | 완료 | `rag_engine.py` |
+| 요청 문장 분석 | 완료 | `request_analyzer.py` |
+| 기사별 요약 | 완료 | 근거 번호 부착 |
+| 한국어 다듬기 | 완료 | `polisher.py` |
+| 검수 채점 | 완료 | 실제로 감점함 |
+| LangGraph 순환·중단 | 완료 | 중단→수정→승인 검증 |
+| MySQL 저장 | 완료 | 재시작 후에도 유지 |
+| 메일 발송 | 완료 | 실제 발송 성공 |
+| 자동 실행 | 완료 | 07/12/18시, 08:30 |
+| 화면 | 완료 | `backend/static/index.html` |
 
-### 추가로 설치할 것
+### 남은 일 (팀)
 
-```bash
-pip install pymysql sqlalchemy apscheduler
-```
-
-> MySQL 8.4는 이 PC에 이미 설치돼 있다.
-> 다만 `MYSQL84` 서비스가 **정지 상태**라 먼저 켜야 한다.
+| 할 일 | 담당 |
+|---|---|
+| 중복 코드 정리 (`newsletter_m1.py` vs `backend/`) | 팀 |
+| 화면 담당 확정 — 배포된 Streamlit 이 아직 가짜 데이터를 씀 | 팀 |
+| 배포·마무리 | 팀장 |
 
 ---
 

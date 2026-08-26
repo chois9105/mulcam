@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from typing import Dict, List
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
@@ -31,6 +33,16 @@ PASSWORD = os.getenv("MYSQL_PASSWORD", "")
 DB_NAME = os.getenv("MYSQL_DB", "newsletter")
 
 Base = declarative_base()
+
+# SQLAlchemy의 create_all()은 기존 테이블에 컬럼을 추가하지 않는다.
+# ORM 모델에 컬럼을 추가할 때 배포 DB도 자동으로 맞출 수 있도록 명시한다.
+DRAFT_COLUMN_MIGRATIONS: Dict[str, str] = {
+    "research_items": "ADD COLUMN research_items JSON NULL",
+    "user_email": "ADD COLUMN user_email VARCHAR(255) NULL",
+    "approved_template": "ADD COLUMN approved_template MEDIUMTEXT NULL",
+    "next_run_at": "ADD COLUMN next_run_at DATETIME NULL",
+    "last_scheduled_at": "ADD COLUMN last_scheduled_at DATETIME NULL",
+}
 
 
 def _url(db: str | None) -> str:
@@ -89,6 +101,51 @@ def create_database_if_missing() -> bool:
         conn.commit()
     root.dispose()
     return True
+
+
+def missing_draft_columns(column_names) -> List[str]:
+    """현재 drafts 컬럼 목록에서 애플리케이션 필수 컬럼 누락분을 찾는다."""
+    existing = set(column_names)
+    return [name for name in DRAFT_COLUMN_MIGRATIONS if name not in existing]
+
+
+def ensure_schema() -> dict:
+    """
+    현재 ORM 모델과 배포 DB 스키마를 맞춘다.
+
+    새 테이블은 create_all()로 만들고, 기존 drafts 테이블의 새 컬럼은
+    ALTER TABLE로 추가한다. 여러 서버 프로세스가 동시에 시작해 컬럼을
+    함께 추가하려는 경우 MySQL 1060(duplicate column)은 성공으로 본다.
+    """
+    # 모델을 import 해야 Base.metadata에 articles/drafts가 등록된다.
+    import db_models  # noqa: F401
+
+    Base.metadata.create_all(engine)
+    current = [c["name"] for c in inspect(engine).get_columns("drafts")]
+    missing = missing_draft_columns(current)
+    applied = []
+
+    for name in missing:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    f"ALTER TABLE `drafts` {DRAFT_COLUMN_MIGRATIONS[name]}"
+                ))
+            applied.append(name)
+        except OperationalError as exc:
+            args = getattr(getattr(exc, "orig", None), "args", ())
+            code = args[0] if args else None
+            if code != 1060:  # 다른 프로세스가 먼저 추가한 경우만 무시
+                raise
+
+    verified = [c["name"] for c in inspect(engine).get_columns("drafts")]
+    still_missing = missing_draft_columns(verified)
+    if still_missing:
+        raise RuntimeError(
+            "DB 스키마 갱신 후에도 drafts 컬럼이 없습니다: "
+            + ", ".join(still_missing)
+        )
+    return {"ok": True, "applied": applied, "missing": []}
 
 
 def check_connection() -> dict:

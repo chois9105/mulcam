@@ -35,8 +35,18 @@ def _detect() -> str:
         info = check_connection()
         if info["ok"]:
             from sqlalchemy import inspect
-            from database import engine
-            if "drafts" in inspect(engine).get_table_names():
+            from database import engine, missing_draft_columns
+            inspector = inspect(engine)
+            if "drafts" in inspector.get_table_names():
+                missing = missing_draft_columns(
+                    c["name"] for c in inspector.get_columns("drafts")
+                )
+                if missing:
+                    _MODE, _REASON = (
+                        "memory",
+                        "DB 스키마가 이전 버전입니다. 누락 컬럼: " + ", ".join(missing),
+                    )
+                    return _MODE
                 _MODE = "mysql"
                 _REASON = ""
             else:
@@ -87,6 +97,7 @@ def _to_row(draft: Dict) -> Dict:
         "markdown": draft.get("markdown"),
         "article_html": draft.get("article_html"),
         "sources": draft.get("sources"),
+        "research_items": draft.get("_research_items"),
         "score": draft.get("score"),
         "score_grade": draft.get("score_grade"),
         "readability": audit.get("readability"),
@@ -97,6 +108,8 @@ def _to_row(draft: Dict) -> Dict:
         "revision_count": draft.get("revision_count", 0),
         "last_direction": draft.get("_last_direction"),
         "frequency": draft.get("frequency"),
+        "user_email": draft.get("user_email"),
+        "approved_template": draft.get("approved_template"),
     }
 
 
@@ -114,13 +127,17 @@ def _from_row(row) -> Dict:
         "status": row.status,
         "frequency": row.frequency,
         "frequency_label": None,      # 서비스에서 다시 채운다
+        "user_email": row.user_email,
+        "approved_template": row.approved_template,
         "created_at": fmt(row.created_at),
         "approved_at": fmt(row.approved_at),
+        "next_run_at": fmt(row.next_run_at),
         "sent_at": fmt(row.sent_at),
         "revision_count": row.revision_count,
         "article_html": row.article_html,
         "markdown": row.markdown,
         "sources": row.sources or [],
+        "pipeline": ["keyword_search", "research", "newsletter", "review"],
         "audit_report": {
             "readability": row.readability,
             "fact_accuracy": row.fact_accuracy,
@@ -131,6 +148,7 @@ def _from_row(row) -> Dict:
         "_request_text": row.request_text,
         "_query": row.search_query,
         "_article_count": 8,
+        "_research_items": row.research_items or [],
         "_last_direction": row.last_direction,
     }
 
@@ -183,13 +201,17 @@ def list_drafts(status: str = "all") -> List[Dict]:
         return [_from_row(r) for r in rows]
 
 
-def mark_approved(draft_code: str, frequency: str) -> None:
+def mark_approved(draft_code: str, frequency: str, *, user_email: str,
+                  approved_template: str, next_run_at: datetime | None) -> None:
     if _detect() == "memory":
         d = _memory.get(draft_code)
         if d:
             d["status"] = "approved"
             d["frequency"] = frequency
+            d["user_email"] = user_email
+            d["approved_template"] = approved_template
             d["approved_at"] = datetime.now().strftime("%Y.%m.%d %H:%M")
+            d["_next_run_at"] = next_run_at
         return
 
     from database import session_scope
@@ -199,7 +221,73 @@ def mark_approved(draft_code: str, frequency: str) -> None:
         if row:
             row.status = "approved"
             row.frequency = frequency
+            row.user_email = user_email
+            row.approved_template = approved_template
             row.approved_at = datetime.now()
+            row.next_run_at = next_run_at
+
+
+def list_schedules(due_at: datetime | None = None) -> List[Dict]:
+    """DB에 저장된 반복 승인 건을 스케줄러가 쓰는 형태로 돌려준다."""
+    if _detect() == "memory":
+        rows = []
+        for d in _memory.values():
+            next_run = d.get("_next_run_at")
+            if not d.get("approved_at") or d.get("frequency") in (None, "once"):
+                continue
+            if due_at is not None and (next_run is None or next_run > due_at):
+                continue
+            rows.append({
+                "schedule_id": d["id"],
+                "draft_id": d["id"],
+                "request_text": d.get("_request_text"),
+                "frequency": d.get("frequency"),
+                "user_email": d.get("user_email"),
+                "approved_template": d.get("approved_template"),
+                "next_run_at": next_run,
+                "is_active": True,
+            })
+        return rows
+
+    from database import session_scope
+    from db_models import Draft
+    with session_scope() as s:
+        q = s.query(Draft).filter(
+            Draft.approved_at.isnot(None),
+            Draft.frequency.isnot(None),
+            Draft.frequency != "once",
+        )
+        if due_at is not None:
+            q = q.filter(Draft.next_run_at.isnot(None), Draft.next_run_at <= due_at)
+        rows = q.order_by(Draft.next_run_at.asc()).all()
+        return [{
+            "schedule_id": r.id,
+            "draft_id": r.draft_code,
+            "request_text": r.request_text,
+            "frequency": r.frequency,
+            "user_email": r.user_email,
+            "approved_template": r.approved_template,
+            "next_run_at": r.next_run_at,
+            "is_active": True,
+        } for r in rows]
+
+
+def mark_schedule_run(draft_code: str, *, last_run_at: datetime,
+                      next_run_at: datetime) -> None:
+    if _detect() == "memory":
+        d = _memory.get(draft_code)
+        if d:
+            d["_last_scheduled_at"] = last_run_at
+            d["_next_run_at"] = next_run_at
+        return
+
+    from database import session_scope
+    from db_models import Draft
+    with session_scope() as s:
+        row = s.query(Draft).filter_by(draft_code=draft_code).first()
+        if row:
+            row.last_scheduled_at = last_run_at
+            row.next_run_at = next_run_at
 
 
 def mark_sent(draft_code: str, error: str = None) -> None:

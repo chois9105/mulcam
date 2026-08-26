@@ -140,17 +140,39 @@ def send_draft(draft: Dict, to: Optional[List[str]] = None) -> Dict:
     if isinstance(to, str):
         to = [to]
     to_list = [a for a in (to or d["to"]) if a]
+    problems = list(d["problems"])
+    if to_list:
+        problems = [p for p in problems if not p.startswith("MAIL_TO")]
+        problems.extend(
+            f"메일 주소 형식이 이상합니다: {addr}"
+            for addr in to_list if not valid_email(addr)
+        )
 
-    if not d["ready"]:
+    if problems:
         return {"sent": False, "reason": "발송 설정이 덜 됐습니다.",
-                "problems": d["problems"]}
+                "problems": problems}
     if not to_list:
         return {"sent": False, "reason": "받는 사람이 없습니다."}
 
     subject = f"[뉴스레터] {draft.get('title', '오늘의 뉴스')}"
-    html = to_email_html(
+
+    # 화면 카드에 있는 잔글씨 줄과 같은 형식
+    #   검수 85점 · 기사 7건 · 2026.08.26 09:15
+    bits = []
+    if draft.get("score"):
+        bits.append(f"검수 {draft['score']}점")
+    if draft.get("sources"):
+        bits.append(f"기사 {len(draft['sources'])}건")
+    if draft.get("frequency_label"):
+        bits.append(f"주기 {draft['frequency_label']}")
+    if draft.get("created_at"):
+        bits.append(str(draft["created_at"]))
+    meta = " · ".join(bits)
+
+    html = draft.get("approved_template") or to_email_html(
         title=draft.get("title", "뉴스레터"),
         markdown_text=draft.get("markdown", ""),
+        meta=meta,
         sources=[
             {"n": i, "title": s.get("title", ""), "source": s.get("summary", ""),
              "link": s.get("url", "")}

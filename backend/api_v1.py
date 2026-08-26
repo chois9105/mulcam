@@ -12,17 +12,21 @@ AgentLetter Compact 화면의 버튼 세 개에 하나씩 대응한다.
 
 from __future__ import annotations
 
+from datetime import datetime
+import logging
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 import scheduler
 from newsletter_service import FREQUENCY_LABEL, service
 
 router = APIRouter(prefix="/api", tags=["화면 연동"])
+logger = logging.getLogger(__name__)
 
 Frequency = Literal["once", "daily", "weekly", "biweekly", "monthly"]
+DraftStatus = Literal["all", "pending", "approved", "rejected", "sent"]
 
 
 # ------------------------------------------------------------------
@@ -77,7 +81,8 @@ async def create_newsletter(req: NewsletterRequest):
     except ValueError as e:
         raise HTTPException(404, f"관련 뉴스를 찾지 못했습니다: {e}")
     except Exception as e:
-        raise HTTPException(500, f"생성에 실패했습니다: {e}")
+        logger.exception("뉴스레터 생성 실패")
+        raise HTTPException(500, "생성에 실패했습니다. 잠시 후 다시 시도해 주세요.") from e
 
 
 # ------------------------------------------------------------------
@@ -89,17 +94,19 @@ async def revise_newsletter(draft_id: str, req: ReviseRequest):
     요청대로 다시 쓴다. 기사를 새로 찾지 않고 같은 근거로 다시 작성한다.
     응답은 ① 과 같은 모양이라 화면은 카드만 갈아끼우면 된다.
     """
-    draft = service.get(draft_id)
-    if not draft:
-        raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
-    if draft["status"] in ("approved", "sent"):
-        raise HTTPException(409, "이미 승인된 요약본은 수정할 수 없습니다.")
-
     try:
+        draft = service.get(draft_id)
+        if not draft:
+            raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
+        if draft["status"] in ("approved", "sent"):
+            raise HTTPException(409, "이미 승인된 요약본은 수정할 수 없습니다.")
         updated = service.revise(draft_id, req.direction)
         return service.to_response(updated)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"수정에 실패했습니다: {e}")
+        logger.exception("뉴스레터 수정 실패: %s", draft_id)
+        raise HTTPException(500, "수정에 실패했습니다. 잠시 후 다시 시도해 주세요.") from e
 
 
 # ------------------------------------------------------------------
@@ -112,38 +119,50 @@ async def approve_newsletter(draft_id: str, req: ApproveRequest):
     주기가 `once` 가 아니면, 이후 그 주기마다 같은 요청으로 뉴스를 새로 모아
     요약본을 만들어 승인 대기에 올린다.
     """
-    draft = service.get(draft_id)
-    if not draft:
-        raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
-    if draft["status"] in ("approved", "sent"):
-        raise HTTPException(409, "이미 승인된 요약본입니다.")
-
     try:
+        draft = service.get(draft_id)
+        if not draft:
+            raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
+        if draft["status"] in ("approved", "sent"):
+            raise HTTPException(409, "이미 승인된 요약본입니다.")
         approved = service.approve(draft_id, req.frequency, req.approved_template)
         res = service.to_response(approved)
         res["message"] = (
             f"승인되었습니다. 주기: {FREQUENCY_LABEL.get(req.frequency, req.frequency)}"
         )
         return res
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"승인에 실패했습니다: {e}")
+        logger.exception("뉴스레터 승인 실패: %s", draft_id)
+        raise HTTPException(500, "승인에 실패했습니다. 잠시 후 다시 시도해 주세요.") from e
 
 
 # ------------------------------------------------------------------
 # 보조 (버튼은 아니지만 화면이 쓰면 편한 것)
 # ------------------------------------------------------------------
 @router.get("/drafts", summary="요약본 목록 (② 드롭다운·③ 목록용)")
-async def list_drafts(status: str = "all"):
-    items = [service.to_response(d) for d in service.list_drafts(status)]
-    return {"count": len(items), "drafts": items}
+async def list_drafts(status: DraftStatus = "all"):
+    try:
+        items = [service.to_response(d) for d in service.list_drafts(status)]
+        return {"count": len(items), "drafts": items}
+    except Exception as e:
+        logger.exception("뉴스레터 목록 조회 실패")
+        raise HTTPException(500, "목록을 불러오지 못했습니다.") from e
 
 
 @router.get("/drafts/{draft_id}", summary="요약본 상세")
 async def get_draft(draft_id: str):
-    draft = service.get(draft_id)
-    if not draft:
-        raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
-    return service.to_response(draft)
+    try:
+        draft = service.get(draft_id)
+        if not draft:
+            raise HTTPException(404, f"요약본을 찾을 수 없습니다: {draft_id}")
+        return service.to_response(draft)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("뉴스레터 상세 조회 실패: %s", draft_id)
+        raise HTTPException(500, "요약본을 불러오지 못했습니다.") from e
 
 
 # ------------------------------------------------------------------
@@ -151,16 +170,20 @@ async def get_draft(draft_id: str):
 # ------------------------------------------------------------------
 @router.get("/status", summary="백엔드 상태 (저장소·스케줄러·수집 현황)")
 async def backend_status():
-    return {
-        "storage": service.storage_mode(),
-        "scheduler": scheduler.status(),
-        "drafts": len(service.list_drafts()),
-        "schedules": len(service.schedules()),
-    }
+    try:
+        return {
+            "storage": service.storage_mode(),
+            "scheduler": scheduler.status(),
+            "drafts": len(service.list_drafts()),
+            "schedules": len(service.schedules()),
+        }
+    except Exception as e:
+        logger.exception("백엔드 상태 조회 실패")
+        raise HTTPException(503, "DB 또는 스케줄러 상태를 확인하지 못했습니다.") from e
 
 
 @router.post("/news/collect", summary="뉴스 수집을 지금 실행 (평소엔 스케줄러가 함)")
-async def collect_now(limit_per_feed: int = 12):
+async def collect_now(limit_per_feed: int = Query(12, ge=1, le=50)):
     """1~2분 걸린다. 요청 버튼과 분리해 둔 이유다."""
     return scheduler.collect_news(limit_per_feed=limit_per_feed)
 
@@ -191,7 +214,8 @@ async def graph_start(req: GraphStartRequest):
     try:
         return gp.start(req.request_text, tid)
     except Exception as e:
-        raise HTTPException(500, f"그래프 실행 실패: {e}")
+        logger.exception("그래프 실행 실패: %s", tid)
+        raise HTTPException(500, "그래프 실행에 실패했습니다.") from e
 
 
 @router.post("/graph/{thread_id}/resume", summary="[LangGraph] 사람의 결정으로 이어서 실행")
@@ -200,7 +224,8 @@ async def graph_resume(thread_id: str, req: GraphResumeRequest):
     try:
         return gp.resume(thread_id, req.action, req.feedback, req.frequency)
     except Exception as e:
-        raise HTTPException(500, f"그래프 재개 실패: {e}")
+        logger.exception("그래프 재개 실패: %s", thread_id)
+        raise HTTPException(500, "그래프 재개에 실패했습니다.") from e
 
 
 @router.get("/graph/{thread_id}", summary="[LangGraph] 지금 어느 노드에서 멈춰 있나")
@@ -241,4 +266,5 @@ async def advise_request(req: AdviseRequest):
     except RuntimeError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        raise HTTPException(500, f"제안 생성에 실패했습니다: {e}")
+        logger.exception("요청문 제안 생성 실패")
+        raise HTTPException(500, "제안 생성에 실패했습니다.") from e

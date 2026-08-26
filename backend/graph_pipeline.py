@@ -45,6 +45,7 @@ class NewsletterState(TypedDict, total=False):
     title_hint: str
 
     sources: List[Dict]        # 근거 기사
+    research_items: List[Dict] # 실시간 검색과 색인 보강을 합친 원본
     context: str               # LLM 에 넘길 근거 본문 묶음
     markdown: str              # 뉴스레터 본문
     article_html: str
@@ -86,12 +87,19 @@ def analyze_node(state: NewsletterState) -> Dict:
 
 
 def research_node(state: NewsletterState) -> Dict:
-    """[2] 리서치 에이전트 - 모아둔 기사에서 관련된 것을 고른다."""
+    """[2] 리서치 에이전트 - 실시간 검색 후 저장 색인으로 보강한다."""
+    import compose
+
     svc = _svc()
-    docs = svc.rag.search(state["query"], k=state.get("article_count", 8))
+    items = svc.research(
+        state.get("keywords", []), state.get("article_count", 8)
+    )
+    if not items:
+        raise ValueError(f"'{state['query']}' 와 관련된 뉴스를 찾지 못했습니다.")
     return {
-        "sources": svc.rag._sources(docs),
-        "context": svc.rag._format_context(docs),
+        "research_items": items,
+        "sources": compose.items_to_sources(items),
+        "context": compose.format_items(items),
         "status": "researched",
     }
 

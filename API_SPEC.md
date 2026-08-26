@@ -12,6 +12,10 @@
 
 > 이 문서는 **실제 배포된 코드와 일치**한다. `/docs` 에서 직접 눌러볼 수도 있다.
 
+서버 시작 시 ORM 모델과 기존 MySQL `drafts` 테이블을 비교해 누락 컬럼을
+자동 추가한다. SQLAlchemy `create_all()`만으로는 기존 테이블의 컬럼이
+추가되지 않기 때문에 별도 스키마 보정 단계가 실행된다.
+
 ---
 
 ## 화면 버튼 = 엔드포인트 3개
@@ -297,6 +301,9 @@ pending (승인 대기) ──approve──▶ approved ──발송──▶ se
 | `GET /api/graph/{thread_id}` | 지금 어느 노드에서 멈춰 있나 |
 | `/api/rag/*` | 개발·확인용 (수집·검색·요약을 따로 호출) |
 | `GET /api/health` | 살아있는지 확인 |
+
+`POST /api/generate`, `POST /api/newsletter/from-rss`는 이전 버전 호환용이며
+OpenAPI에서 deprecated로 표시된다. 신규 화면은 위의 3개 주요 API만 사용한다.
 
 > `graph` 계열은 과제 요구사항(Conditional Edges, Human-in-the-Loop)을
 > 실제로 보여주기 위한 것이다. 화면 흐름과 하는 일은 같다.

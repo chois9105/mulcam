@@ -133,30 +133,35 @@ class NewsletterService:
         return store.mode()
 
     # ---------- ① 뉴스레터 요청 ----------
-    def create(self, request_text: str) -> Dict:
-        """요청 문장 -> 요약본 한 건"""
-        # 1. 요청 분석
-        plan = self.analyzer.analyze(request_text)
-        query = self.analyzer.to_query(plan)
-
-        # 2. 요청 시점 리서치 — 사용자 키워드로 실시간 검색을 먼저 실행한다.
+    def research(self, keywords: List[str], article_count: int) -> List[Dict]:
+        """실시간 키워드 검색을 우선하고 사전 색인은 선택적으로 보강한다."""
         #
         #    (가) 미리 모아둔 색인 : 국내 16곳, 본문 900자, 원문 링크
         #    (나) 실시간 검색      : 키워드로 지금 찾아옴, 빠짐이 없다
         #
         #    미리 모아둔 것만 쓰면 그 안에 없는 주제를 못 만든다.
         #    실시간만 쓰면 본문이 없어 요약이 얕아진다. 그래서 둘 다 쓴다.
-        live = live_search.search(plan.keywords, per_keyword=6)
+        live = live_search.search(keywords, per_keyword=6)
         indexed = []
         try:
             indexed = compose.docs_to_items(
-                self.rag.search_multi(plan.keywords, k=plan.article_count)
+                self.rag.search_multi(keywords, k=article_count)
             )
         except RuntimeError as e:
             # 색인은 품질 보강용일 뿐 필수 선행조건이 아니다.
             logger.info("사전 색인 없이 실시간 리서치만 사용합니다: %s", e)
         items = live_search.merge_with_indexed(indexed, live,
-                                               limit=plan.article_count)
+                                               limit=article_count)
+        return items
+
+    def create(self, request_text: str) -> Dict:
+        """요청 문장 -> 요약본 한 건"""
+        # 1. 요청 분석
+        plan = self.analyzer.analyze(request_text)
+        query = self.analyzer.to_query(plan)
+
+        # 2. 요청 시점 리서치
+        items = self.research(plan.keywords, plan.article_count)
         if not items:
             raise ValueError(f"'{query}' 와 관련된 뉴스를 찾지 못했습니다.")
 

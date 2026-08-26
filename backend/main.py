@@ -89,6 +89,17 @@ import scheduler as _scheduler
 @app.on_event("startup")
 def _on_startup():
     import store
+    from database import check_connection, ensure_schema
+
+    db = check_connection()
+    if db["ok"]:
+        # create_all()만으로는 기존 테이블에 새 ORM 컬럼이 생기지 않는다.
+        # API 요청을 받기 전에 배포 DB 스키마를 현재 모델과 맞춘다.
+        schema = ensure_schema()
+        if schema["applied"]:
+            logger.info("DB 스키마 자동 갱신: %s", ", ".join(schema["applied"]))
+        store.reset_mode()
+
     m = store.mode()
     logger.info("저장소: %s - %s", m["mode"], m["note"])
     if os.getenv("SCHEDULER_ENABLED", "true").lower() != "false":
@@ -140,7 +151,7 @@ async def health_check():
     }
 
 
-@app.post("/api/generate", response_model=NewsletterResponse)
+@app.post("/api/generate", response_model=NewsletterResponse, deprecated=True)
 async def generate_newsletter(request: NewsletterRequest):
     """뉴스레터 생성"""
     try:
@@ -233,7 +244,7 @@ async def fetch_rss_news():
         )
 
 
-@app.post("/api/newsletter/from-rss")
+@app.post("/api/newsletter/from-rss", deprecated=True)
 async def generate_newsletter_from_rss(request: NewsletterRequest):
     """RSS 뉴스를 기반으로 뉴스레터 생성"""
     try:

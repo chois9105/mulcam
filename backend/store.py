@@ -35,8 +35,18 @@ def _detect() -> str:
         info = check_connection()
         if info["ok"]:
             from sqlalchemy import inspect
-            from database import engine
-            if "drafts" in inspect(engine).get_table_names():
+            from database import engine, missing_draft_columns
+            inspector = inspect(engine)
+            if "drafts" in inspector.get_table_names():
+                missing = missing_draft_columns(
+                    c["name"] for c in inspector.get_columns("drafts")
+                )
+                if missing:
+                    _MODE, _REASON = (
+                        "memory",
+                        "DB 스키마가 이전 버전입니다. 누락 컬럼: " + ", ".join(missing),
+                    )
+                    return _MODE
                 _MODE = "mysql"
                 _REASON = ""
             else:

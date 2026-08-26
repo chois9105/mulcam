@@ -153,6 +153,90 @@ st.markdown(
           margin-top: -4px;
           margin-bottom: 10px;
       }
+
+      .newsletter-preview {
+          border: 1px solid #E5E7EB;
+          border-radius: 12px;
+          padding: 24px 26px;
+          margin-top: 10px;
+          background: #FFFFFF;
+          color: #1F2328;
+          font-size: 14.5px;
+          line-height: 1.75;
+      }
+
+      .newsletter-preview h1 {
+          color: #1F2328;
+          font-size: 22px;
+          line-height: 1.4;
+          margin: 22px 0 14px !important;
+      }
+
+      .newsletter-preview h2,
+      .newsletter-preview h3 {
+          color: #1F2328;
+          margin-top: 20px !important;
+      }
+
+      .newsletter-preview p {
+          color: #5B6470;
+          margin: 0 0 15px;
+      }
+
+      .newsletter-preview a {
+          color: #E8453C;
+          text-decoration: none;
+      }
+
+      .newsletter-preview a:hover {
+          text-decoration: underline;
+      }
+
+      .newsletter-preview .article-hero-box {
+          background: #FFF6F5;
+          border-left: 4px solid #E8453C;
+          border-radius: 0 10px 10px 0;
+          padding: 17px 20px;
+          margin-bottom: 22px;
+      }
+
+      .newsletter-preview .article-hero-title,
+      .newsletter-preview .takeaways-title {
+          color: #1F2328;
+          font-size: 15px;
+          font-weight: 700;
+          margin-bottom: 7px;
+      }
+
+      .newsletter-preview .article-hero-text {
+          color: #5B6470;
+      }
+
+      .newsletter-preview .article-key-takeaways {
+          border-top: 1px solid #E5E7EB;
+          margin-top: 24px;
+          padding-top: 18px;
+      }
+
+      .newsletter-preview .takeaway-list {
+          margin: 9px 0 0;
+          padding-left: 22px;
+      }
+
+      .newsletter-preview .takeaway-list li {
+          margin-bottom: 8px;
+      }
+
+      .newsletter-preview .source-name {
+          color: #9AA1AB;
+          font-size: 12.5px;
+      }
+
+      .preview-meta {
+          color: #9AA1AB;
+          font-size: 12.5px;
+          margin-bottom: 8px;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -879,38 +963,75 @@ if st.session_state.last_api_message:
 
 
 # ============================================================
-# 11. 화면 출력 - Backend가 만든 뉴스 헤드 목록
+# 11. 선택한 뉴스레터 템플릿 / 검수 / 근거 표시
 # ============================================================
 if drafts:
     st.markdown("---")
-    for draft in drafts[:8]:
-        selected = draft["id"] == st.session_state.active_draft_id
-        selected_class = " selected" if selected else ""
-        title = safe_text(draft["title"])
-        summary = safe_text(draft["summary"])
-        status = safe_text(status_label(draft["status"]))
-        score = safe_text(draft["score"] if draft["score"] != "" else "-")
-        period = safe_text(
-            frequency_label(draft["frequency"]) if draft["frequency"] else "-"
-        )
-        date = safe_text(draft["date"])
-        meta_parts = [
-            f"검수 {score}점" if score != "-" else "검수 -",
-            status,
-            f"주기 {period}",
-        ]
-        if date:
-            meta_parts.append(date)
+    try:
+        active_detail = get_draft_raw(st.session_state.active_draft_id)
+    except BackendAPIError as exc:
+        active_detail = {}
+        show_api_error(exc)
+
+    if isinstance(active_detail, dict) and active_detail:
+        title = safe_text(first_value(active_detail, ["title", "subject"], "뉴스레터"))
+        status = safe_text(status_label(str(active_detail.get("status", ""))))
+        score = safe_text(active_detail.get("score", "-"))
+        frequency = active_detail.get("frequency")
+        period = safe_text(frequency_label(str(frequency)) if frequency else "-")
+        created_at = safe_text(active_detail.get("created_at", ""))
+
+        st.markdown("### ③ 뉴스레터 미리보기")
+        st.caption("백엔드가 생성한 HTML 템플릿을 수정하지 않고 표시합니다.")
+        st.markdown(f"#### {title}")
+        meta = f"검수 {score}점 · {status} · 주기 {period}"
+        if created_at:
+            meta += f" · {created_at}"
         st.markdown(
-            f"""
-            <div class="compact-card{selected_class}">
-              <div class="head-title">{title}</div>
-              <div class="head-summary">{summary}</div>
-              <div class="head-meta">{" · ".join(meta_parts)}</div>
-            </div>
-            """,
+            f'<div class="preview-meta">{meta}</div>',
             unsafe_allow_html=True,
         )
+
+        article_html = first_value(
+            active_detail,
+            ["article_html", "approved_template"],
+            "",
+        )
+        if article_html:
+            st.markdown(
+                f'<div class="newsletter-preview">{article_html}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            markdown_text = active_detail.get("markdown") or ""
+            if markdown_text:
+                st.markdown(markdown_text)
+            else:
+                st.info("표시할 뉴스레터 내용이 없습니다.")
+
+        audit = active_detail.get("audit_report") or {}
+        st.markdown("#### 🔍 검수 결과")
+        metric1, metric2, metric3, metric4 = st.columns(4)
+        metric1.metric("총점", active_detail.get("score", "-"))
+        metric2.metric("가독성", audit.get("readability", "-"))
+        metric3.metric("사실 정확도", audit.get("fact_accuracy", "-"))
+        metric4.metric("일관성", audit.get("coherence", "-"))
+        if audit.get("reviewer_comment"):
+            st.caption(f"편집장 의견 · {audit['reviewer_comment']}")
+
+        sources = active_detail.get("sources") or []
+        if sources:
+            with st.expander(f"🔗 근거 기사 {len(sources)}건", expanded=False):
+                for index, source in enumerate(sources, 1):
+                    source_title = source.get("title") or f"기사 {index}"
+                    url = source.get("url") or source.get("link") or ""
+                    media = source.get("summary") or source.get("domain") or ""
+                    if url:
+                        st.markdown(
+                            f"{index}. [{source_title}]({url})  ·  {media}"
+                        )
+                    else:
+                        st.markdown(f"{index}. {source_title}  ·  {media}")
 
 
 # ============================================================

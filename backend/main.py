@@ -126,7 +126,9 @@ class NewsletterResponse(BaseModel):
 
 
 # API 엔드포인트
-@app.get("/health")
+# 배포 환경(로드밸런서 등)이 /health 를 쓰는 경우가 있어 두 경로 다 받는다
+@app.get("/api/health")
+@app.get("/health", include_in_schema=False)
 async def health_check():
     """헬스 체크"""
     return {
@@ -138,7 +140,7 @@ async def health_check():
     }
 
 
-@app.post("/generate", response_model=NewsletterResponse)
+@app.post("/api/generate", response_model=NewsletterResponse)
 async def generate_newsletter(request: NewsletterRequest):
     """뉴스레터 생성"""
     try:
@@ -190,7 +192,7 @@ async def generate_newsletter(request: NewsletterRequest):
         )
 
 
-@app.post("/validate-emails")
+@app.post("/api/validate-emails")
 async def validate_emails(emails: List[str]):
     """이메일 주소 검증"""
     email_service = EmailService()
@@ -208,7 +210,7 @@ async def validate_emails(emails: List[str]):
     return results
 
 
-@app.get("/news/rss")
+@app.get("/api/news/rss")
 async def fetch_rss_news():
     """RSS 피드에서 최신 뉴스 수집"""
     try:
@@ -231,7 +233,7 @@ async def fetch_rss_news():
         )
 
 
-@app.post("/newsletter/from-rss")
+@app.post("/api/newsletter/from-rss")
 async def generate_newsletter_from_rss(request: NewsletterRequest):
     """RSS 뉴스를 기반으로 뉴스레터 생성"""
     try:

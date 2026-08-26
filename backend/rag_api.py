@@ -4,18 +4,18 @@ RAG 뉴스레터 API 라우터
 엔드포인트 설계 원칙:
   수집(느림) 과 조회/생성(빠름) 을 분리한다.
   RSS 수집 + 본문 크롤링 + 임베딩은 1~2분 걸리므로 매 요청마다 하면 안 된다.
-  한 번 /rag/build 로 색인을 만들어두고, 그 뒤 /rag/ask 나 /rag/summarize 를
+  한 번 /api/rag/build 로 색인을 만들어두고, 그 뒤 /api/rag/ask 나 /api/rag/summarize 를
   여러 번 빠르게 호출하는 구조.
 
-  POST /rag/build      뉴스 수집 -> 본문 크롤링 -> 색인 (준비 단계, 하루 1~2회)
-  GET  /rag/status     색인이 준비됐는지 확인
-  POST /rag/ask        리서치 - 질문에 기사 근거로 답변
-  POST /rag/summarize  요약 - 3가지 스타일 중 선택
-  GET  /rag/styles     사용 가능한 요약 스타일 목록
-  GET  /rag/news       수집된 원본 뉴스 JSON (링크 포함, 상세페이지 이동용)
-  POST /rag/draft      요약+검수 -> 프론트엔드 NewsletterDraft 형식으로 반환
-  GET  /rag/drafts     생성된 초안 목록
-  GET  /rag/drafts/{id} 초안 상세
+  POST /api/rag/build      뉴스 수집 -> 본문 크롤링 -> 색인 (준비 단계, 하루 1~2회)
+  GET  /api/rag/status     색인이 준비됐는지 확인
+  POST /api/rag/ask        리서치 - 질문에 기사 근거로 답변
+  POST /api/rag/summarize  요약 - 3가지 스타일 중 선택
+  GET  /api/rag/styles     사용 가능한 요약 스타일 목록
+  GET  /api/rag/news       수집된 원본 뉴스 JSON (링크 포함, 상세페이지 이동용)
+  POST /api/rag/draft      요약+검수 -> 프론트엔드 NewsletterDraft 형식으로 반환
+  GET  /api/rag/drafts     생성된 초안 목록
+  GET  /api/rag/drafts/{id} 초안 상세
 """
 
 from datetime import datetime
@@ -30,7 +30,8 @@ from rag_engine import STYLE_INFO, NewsRAG
 from reviewer import NewsletterReviewer
 from rss_collector import DEFAULT_FEEDS, RSSCollector
 
-router = APIRouter(prefix="/rag", tags=["RAG 뉴스레터"])
+# 팀 규약: 모든 엔드포인트는 /api 로 시작한다 (2026-08-25 팀장 요청)
+router = APIRouter(prefix="/api/rag", tags=["RAG (개발·확인용)"])
 
 # 마지막 수집 결과를 메모리에 보관 (원본 JSON 조회용)
 _state = {"news": [], "built_at": None, "count": 0, "full_text_ok": 0, "drafts": {}}

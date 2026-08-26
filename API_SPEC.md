@@ -182,7 +182,7 @@ POST /api/drafts/{draft_id}/approve
 | `approved_template` | — | 현재 초안 HTML | 사용자가 최종 승인한 템플릿 HTML |
 
 로그인 화면이 없는 단일 사용자 서비스이므로 승인 시 사용자 이메일은 항상
-`contact@1435.co.kr` 로 저장된다. `frequency`, `approved_template`, `user_email`,
+`contact@1435.co.kr` 로 저장된다. (서버 `.env` 에 `MAIL_TO` 가 있으면 그 주소를 쓴다) `frequency`, `approved_template`, `user_email`,
 다음 실행 시각은 MySQL `drafts` 테이블에 영속 저장된다.
 
 ### 응답

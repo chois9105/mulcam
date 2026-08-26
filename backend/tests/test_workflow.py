@@ -118,7 +118,7 @@ def test_approve_persists_fixed_user_template_and_frequency(monkeypatch):
     approved = service.approve("draft_1", "weekly", "<article>승인본</article>")
 
     assert persisted["frequency"] == "weekly"
-    assert persisted["user_email"] == "contact@1435.co.kr"
+    assert persisted["user_email"] == ns.DEFAULT_USER_EMAIL
     assert persisted["approved_template"] == "<article>승인본</article>"
     assert persisted["next_run_at"] > datetime.now()
-    assert approved["user_email"] == "contact@1435.co.kr"
+    assert approved["user_email"] == ns.DEFAULT_USER_EMAIL

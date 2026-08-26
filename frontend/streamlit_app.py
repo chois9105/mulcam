@@ -1,36 +1,63 @@
 """
 streamlit_app.py
-AgentLetter Compact UI v3
+Newsletter Frontend - Remote Backend API 연동 버전
 
-외부 스타일 참조:
-- @import url('https://mulcam.1435.co.kr/docs')
-- 외부 URL이 CSS를 반환하지 않아도 시스템 폰트/CSS fallback으로 화면 유지
+구조
+----
+브라우저
+  ↓
+Streamlit Frontend (localhost:8501)
+  ↓ HTTPS
+Remote Newsletter Agent API (https://mulcam.1435.co.kr)
 
-PowerPoint '화면수정-3' 요청 반영:
-- 빨간 박스 영역 숨김: 섹션 제목/설명/헤드 선택 multiselect, 상세 내용/검수 expander 제거
-- 파란 박스 영역 통합: '왜 마음에 안 드나요?' + '어떻게 바꿔 주세요?' -> '이렇게 바꾸어주세요' 1개 입력창
-- 초록 박스 '주기' 이동: 뉴스레터 요청 영역에서 제거하고 '최종 승인' 버튼 옆으로 이동
-- 선택한 뉴스의 헤드 카드는 compact하게 그대로 표시
+연동 API
+--------
+POST /api/newsletter/request
+POST /api/drafts/{draft_id}/revise
+POST /api/drafts/{draft_id}/approve
 
-실행:
-python -m streamlit run streamlit_app.py
+조회 API
+--------
+GET /api/drafts
+GET /api/drafts/{draft_id}
+GET /api/status
+
+중요
+----
+- 이 파일은 agent_graph.py를 import하지 않습니다.
+- 로컬 LangGraph/Agent를 실행하지 않습니다.
+- /docs는 Swagger 문서 URL이며 API 호출 Base URL은 https://mulcam.1435.co.kr 입니다.
+- 실행 시 /openapi.json을 읽어 실제 Request Body 필드명을 가능한 범위에서 자동 매핑합니다.
 """
 
+import os
 import html
 import re
-import time
-from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
+import requests
 import streamlit as st
 
-from agent_graph import workflow_engine
+
+# ============================================================
+# 1. 환경 설정
+# ============================================================
+BACKEND_BASE_URL = os.getenv(
+    "NEWSLETTER_BACKEND_URL",
+    "https://mulcam.1435.co.kr"
+).rstrip("/")
+
+DOCS_URL = f"{BACKEND_BASE_URL}/docs"
+OPENAPI_URL = f"{BACKEND_BASE_URL}/openapi.json"
+
+REQUEST_TIMEOUT = (6, 60)
 
 
-# ---------------------------------------------------------
-# 1. 페이지 설정 / Compact CSS
-# ---------------------------------------------------------
+# ============================================================
+# 2. 페이지 설정 / Compact UI CSS
+# ============================================================
 st.set_page_config(
-    page_title="AgentLetter Compact",
+    page_title="Newsletter Frontend",
     page_icon="📰",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -39,18 +66,10 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /*
-       * 외부 스타일 참조 URL
-       * /docs가 CSS가 아닌 HTML/Swagger 문서를 반환하더라도
-       * 아래 자체 스타일과 시스템 폰트 fallback으로 화면은 정상 동작합니다.
-       */
-      @import url("https://mulcam.1435.co.kr/docs");
-
       :root {
           --app-font: -apple-system, BlinkMacSystemFont, "Segoe UI",
                       "Apple SD Gothic Neo", "Malgun Gothic", Arial, sans-serif;
           --card-radius: 12px;
-          --card-border: rgba(128,128,128,.25);
           --muted-opacity: .72;
       }
 
@@ -59,12 +78,40 @@ st.markdown(
       }
 
       .block-container {
-          padding-top: 1.0rem;
-          padding-bottom: 1.0rem;
+          padding-top: .85rem;
+          padding-bottom: 1rem;
           max-width: 1180px;
       }
-      h1, h2, h3 { margin-bottom: .3rem !important; }
-      div[data-testid="stTextArea"] textarea { min-height: 92px; }
+
+      h1, h2, h3 {
+          margin-bottom: .3rem !important;
+      }
+
+      div[data-testid="stTextArea"] textarea {
+          min-height: 92px;
+      }
+
+      div[data-testid="stVerticalBlockBorderWrapper"] {
+          border-radius: var(--card-radius);
+      }
+
+      div[data-testid="stHorizontalBlock"] {
+          gap: .8rem;
+      }
+
+      .section-label {
+          font-weight: 700;
+          font-size: 16px;
+          margin-bottom: 2px;
+      }
+
+      .flow {
+          font-size: 12px;
+          opacity: var(--muted-opacity);
+          margin-top: -4px;
+          margin-bottom: 8px;
+      }
+
       .compact-card {
           border: 1px solid rgba(128,128,128,.25);
           border-radius: var(--card-radius);
@@ -72,164 +119,620 @@ st.markdown(
           margin: 8px 0 2px 0;
           background: rgba(128,128,128,.035);
       }
+
+      .compact-card.selected {
+          border: 1.5px solid #0A84FF;
+          background: rgba(10,132,255,.055);
+      }
+
       .head-title {
           font-size: 15px;
           font-weight: 700;
           line-height: 1.35;
           margin-bottom: 5px;
       }
+
       .head-summary {
           font-size: 12.5px;
-          opacity: .80;
+          opacity: .82;
           line-height: 1.5;
       }
+
       .head-meta {
           font-size: 11px;
-          opacity: .65;
+          opacity: .66;
           margin-top: 7px;
       }
-      .flow {
-          font-size: 12px;
-          opacity: var(--muted-opacity);
+
+      .backend-line {
+          font-size: 11.5px;
+          opacity: .76;
           margin-top: -4px;
-          margin-bottom: 8px;
+          margin-bottom: 10px;
       }
-      .section-label {
-          font-weight: 700;
-          font-size: 16px;
-          margin-bottom: 2px;
-      }
-      div[data-testid="stVerticalBlockBorderWrapper"] {
-          border-radius: var(--card-radius);
-      }
-      /* 상단 두 박스 사이 간격을 조금 줄임 */
-      div[data-testid="stHorizontalBlock"] { gap: .8rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-# ---------------------------------------------------------
-# 2. 보조 함수
-# ---------------------------------------------------------
-def extract_keywords(request_text: str):
-    """자유형 요청 문장에서 Agent 입력용 핵심 키워드 1~4개를 간단히 추출."""
-    direct = [
-        p.strip()
-        for p in re.split(r"[,/#\n]+", request_text)
-        if p.strip()
-    ]
-    if len(direct) >= 2:
-        return direct[:4]
+# ============================================================
+# 3. Backend API 예외 / HTTP 공통 함수
+# ============================================================
+class BackendAPIError(RuntimeError):
+    """원격 Backend API 호출 실패."""
 
-    words = re.findall(r"[가-힣A-Za-z0-9.+-]+", request_text)
-    stop_words = {
-        "뉴스", "뉴스레터", "관련", "대해", "대한", "만들어", "작성", "해줘",
-        "해주세요", "알려줘", "최근", "최신", "내용", "중심으로", "보고", "정리",
-    }
-    result = []
-    for word in words:
-        if len(word) < 2 or word in stop_words:
-            continue
-        if word not in result:
-            result.append(word)
-        if len(result) == 4:
+    def __init__(self, message: str, status_code: Optional[int] = None, detail: Any = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail
+
+
+@st.cache_resource
+def get_http_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Newsletter-Streamlit-Frontend/1.0",
+    })
+    return session
+
+
+def api_request(
+    method: str,
+    path: str,
+    *,
+    json_body: Optional[Dict[str, Any]] = None,
+    timeout=REQUEST_TIMEOUT,
+) -> Any:
+    """원격 Backend에 1회 요청하고 JSON 결과를 반환."""
+    url = f"{BACKEND_BASE_URL}{path}"
+    session = get_http_session()
+
+    try:
+        response = session.request(
+            method=method.upper(),
+            url=url,
+            json=json_body,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise BackendAPIError(
+            f"백엔드 서버에 연결할 수 없습니다: {exc}"
+        ) from exc
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+
+    if not response.ok:
+        raise BackendAPIError(
+            f"{method.upper()} {path} 호출 실패",
+            status_code=response.status_code,
+            detail=payload,
+        )
+
+    return payload
+
+
+# ============================================================
+# 4. OpenAPI Request Body 자동 인식
+# ============================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def get_openapi_spec() -> Optional[Dict[str, Any]]:
+    """
+    FastAPI의 /openapi.json을 읽는다.
+    읽지 못해도 UI 자체는 동작하며 fallback payload를 사용한다.
+    """
+    try:
+        response = requests.get(
+            OPENAPI_URL,
+            timeout=(5, 15),
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        return None
+
+
+def resolve_ref(spec: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
+    """#/components/schemas/... 형태의 $ref를 해석."""
+    seen = set()
+    current = schema or {}
+
+    while isinstance(current, dict) and "$ref" in current:
+        ref = current["$ref"]
+        if ref in seen or not ref.startswith("#/"):
             break
-    return result or ["AI"]
+        seen.add(ref)
+
+        node: Any = spec
+        for part in ref[2:].split("/"):
+            if not isinstance(node, dict) or part not in node:
+                return current
+            node = node[part]
+        current = node
+
+    # allOf 한 개짜리 흔한 FastAPI 패턴
+    if isinstance(current, dict) and "allOf" in current and len(current["allOf"]) == 1:
+        return resolve_ref(spec, current["allOf"][0])
+
+    return current if isinstance(current, dict) else {}
 
 
-def short_status(status: str):
-    return {
-        "pending": "승인 대기",
-        "approved": "승인 완료",
-        "revision": "수정 중",
-    }.get(status, status)
+def request_schema(path: str, method: str = "post") -> Optional[Dict[str, Any]]:
+    spec = get_openapi_spec()
+    if not spec:
+        return None
+
+    try:
+        operation = spec["paths"][path][method.lower()]
+        request_body = operation.get("requestBody")
+        if not request_body:
+            return {}
+
+        content = request_body.get("content", {})
+        media = (
+            content.get("application/json")
+            or content.get("application/*+json")
+            or next(iter(content.values()), {})
+        )
+        schema = media.get("schema", {})
+        return resolve_ref(spec, schema)
+    except Exception:
+        return None
 
 
-def find_draft(draft_id: str):
-    return next(
-        (d for d in st.session_state.drafts if d["id"] == draft_id),
-        None,
+def normalize_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9가-힣]", "", value.lower())
+
+
+ALIASES = {
+    "request_text": [
+        "request_text", "request", "newsletter_request", "user_request",
+        "prompt", "query", "topic", "content", "text", "instruction",
+        "요청", "뉴스레터요청",
+    ],
+    "feedback": [
+        "feedback", "change_request", "revision_request", "revision",
+        "revise", "request_text", "request", "reason", "instruction",
+        "content", "text", "수정요청", "피드백",
+    ],
+    "frequency": [
+        "frequency", "period", "cycle", "interval", "schedule",
+        "dispatch_frequency", "send_frequency", "주기", "발송주기",
+    ],
+    "approved": [
+        "approved", "approve", "is_approved", "approval", "승인",
+    ],
+}
+
+
+def prop_text(name: str, spec: Dict[str, Any]) -> str:
+    parts = [
+        name,
+        str(spec.get("title", "")),
+        str(spec.get("description", "")),
+    ]
+    return normalize_name(" ".join(parts))
+
+
+def choose_property(
+    properties: Dict[str, Dict[str, Any]],
+    logical_name: str,
+) -> Optional[str]:
+    """논리 필드(request_text/feedback/frequency...)와 실제 OpenAPI 필드를 매핑."""
+    aliases = [normalize_name(x) for x in ALIASES[logical_name]]
+
+    # 1) 실제 필드명 정확/부분 일치
+    for prop in properties:
+        normalized = normalize_name(prop)
+        if normalized in aliases:
+            return prop
+
+    for prop in properties:
+        normalized = normalize_name(prop)
+        if any(alias in normalized or normalized in alias for alias in aliases):
+            return prop
+
+    # 2) title/description까지 검사
+    for prop, spec in properties.items():
+        text = prop_text(prop, spec)
+        if any(alias and alias in text for alias in aliases):
+            return prop
+
+    return None
+
+
+def value_for_required_property(
+    prop_name: str,
+    prop_spec: Dict[str, Any],
+    *,
+    request_text: Optional[str] = None,
+    feedback: Optional[str] = None,
+    frequency: Optional[str] = None,
+) -> Any:
+    """필수 필드 중 아직 매핑되지 않은 값에 합리적 기본값을 적용."""
+    if "default" in prop_spec:
+        return prop_spec["default"]
+
+    if "example" in prop_spec:
+        return prop_spec["example"]
+
+    enum = prop_spec.get("enum")
+    if enum:
+        if frequency in enum:
+            return frequency
+        return enum[0]
+
+    typ = prop_spec.get("type")
+
+    if typ == "boolean":
+        return True
+
+    if typ == "array":
+        item_type = (prop_spec.get("items") or {}).get("type")
+        if item_type == "string":
+            base = request_text or feedback or ""
+            return [base] if base else []
+        return []
+
+    if typ in ("integer", "number"):
+        return 1
+
+    # 문자열 필수 필드는 endpoint 문맥상 사용자가 입력한 텍스트 우선
+    if typ in ("string", None):
+        return request_text or feedback or frequency or ""
+
+    return None
+
+
+def build_json_body(
+    path: str,
+    *,
+    request_text: Optional[str] = None,
+    feedback: Optional[str] = None,
+    frequency: Optional[str] = None,
+    approved: Optional[bool] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    OpenAPI 스키마에 맞춰 JSON Body를 만든다.
+    requestBody가 없는 endpoint면 None을 반환한다.
+    OpenAPI 접근 실패 시 관례적인 필드명으로 fallback한다.
+    """
+    schema = request_schema(path, "post")
+
+    # OpenAPI를 못 읽은 경우 안전한 관례적 fallback
+    if schema is None:
+        if path == "/api/newsletter/request":
+            return {"request_text": request_text or ""}
+        if path.endswith("/revise"):
+            return {"feedback": feedback or ""}
+        if path.endswith("/approve"):
+            return {"frequency": frequency or "daily"}
+        return {}
+
+    # Request Body 자체가 없는 API
+    if schema == {}:
+        return None
+
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+
+    # object schema가 아니면 conventional fallback
+    if not properties:
+        if path == "/api/newsletter/request":
+            return {"request_text": request_text or ""}
+        if path.endswith("/revise"):
+            return {"feedback": feedback or ""}
+        if path.endswith("/approve"):
+            return {"frequency": frequency or "daily"}
+        return {}
+
+    body: Dict[str, Any] = {}
+
+    logical_values = {
+        "request_text": request_text,
+        "feedback": feedback,
+        "frequency": frequency,
+        "approved": approved,
+    }
+
+    for logical_name, value in logical_values.items():
+        if value is None:
+            continue
+
+        prop = choose_property(properties, logical_name)
+        if prop and prop not in body:
+            body[prop] = value
+
+    # 아직 채워지지 않은 required 필드 처리
+    for prop in required:
+        if prop in body:
+            continue
+        prop_spec = resolve_ref(get_openapi_spec() or {}, properties.get(prop, {}))
+        body[prop] = value_for_required_property(
+            prop,
+            prop_spec,
+            request_text=request_text,
+            feedback=feedback,
+            frequency=frequency,
+        )
+
+    return body
+
+
+# ============================================================
+# 5. Newsletter API 기능
+# ============================================================
+def backend_status() -> Any:
+    return api_request("GET", "/api/status")
+
+
+def list_drafts_raw() -> Any:
+    return api_request("GET", "/api/drafts")
+
+
+def get_draft_raw(draft_id: str) -> Any:
+    return api_request("GET", f"/api/drafts/{draft_id}")
+
+
+def request_newsletter(request_text: str) -> Any:
+    path = "/api/newsletter/request"
+    body = build_json_body(path, request_text=request_text)
+    return api_request("POST", path, json_body=body)
+
+
+def revise_draft(draft_id: str, change_request: str) -> Any:
+    concrete_path = f"/api/drafts/{draft_id}/revise"
+    schema_path = "/api/drafts/{draft_id}/revise"
+
+    body = build_json_body(
+        schema_path,
+        feedback=change_request,
+    )
+    return api_request("POST", concrete_path, json_body=body)
+
+
+def approve_draft(draft_id: str, frequency: str) -> Any:
+    concrete_path = f"/api/drafts/{draft_id}/approve"
+    schema_path = "/api/drafts/{draft_id}/approve"
+
+    body = build_json_body(
+        schema_path,
+        frequency=frequency,
+        approved=True,
+    )
+    return api_request("POST", concrete_path, json_body=body)
+
+
+# ============================================================
+# 6. Backend 응답 정규화
+# ============================================================
+def first_value(data: Dict[str, Any], keys: List[str], default: Any = "") -> Any:
+    for key in keys:
+        if key in data and data[key] not in (None, ""):
+            return data[key]
+    return default
+
+
+def extract_draft_id(data: Any) -> Optional[str]:
+    """POST 응답에서 draft_id/id/thread_id를 재귀적으로 찾음."""
+    if isinstance(data, dict):
+        for key in ("draft_id", "id", "newsletter_id", "thread_id"):
+            value = data.get(key)
+            if value not in (None, ""):
+                return str(value)
+
+        for key in ("draft", "data", "result", "newsletter"):
+            if key in data:
+                found = extract_draft_id(data[key])
+                if found:
+                    return found
+
+    return None
+
+
+def normalize_draft(item: Dict[str, Any]) -> Dict[str, Any]:
+    draft_id = first_value(
+        item,
+        ["draft_id", "id", "newsletter_id", "thread_id"],
+        "",
     )
 
+    title = first_value(
+        item,
+        ["title", "headline", "subject", "name"],
+        f"뉴스레터 {draft_id}" if draft_id else "뉴스레터",
+    )
 
-def replace_draft(updated):
-    for i, draft in enumerate(st.session_state.drafts):
-        if draft["id"] == updated["id"]:
-            st.session_state.drafts[i] = updated
-            return
-    st.session_state.drafts.insert(0, updated)
+    summary = first_value(
+        item,
+        ["summary", "head", "headline_summary", "description", "preview", "request_text"],
+        "",
+    )
+
+    status = first_value(
+        item,
+        ["status", "state", "approval_status"],
+        "",
+    )
+
+    score = first_value(
+        item,
+        ["score", "quality_score", "review_score"],
+        "",
+    )
+
+    frequency = first_value(
+        item,
+        ["frequency", "period", "cycle", "schedule"],
+        "",
+    )
+
+    date = first_value(
+        item,
+        ["date", "created_at", "updated_at", "generated_at"],
+        "",
+    )
+
+    return {
+        "id": str(draft_id),
+        "title": str(title),
+        "summary": str(summary),
+        "status": str(status),
+        "score": score,
+        "frequency": str(frequency),
+        "date": str(date),
+        "raw": item,
+    }
 
 
-def frequency_label(value: str):
+def extract_draft_list(payload: Any) -> List[Dict[str, Any]]:
+    """
+    GET /api/drafts 응답이
+    - [...]
+    - {"drafts": [...]}
+    - {"items": [...]}
+    - {"data": [...]}
+    등 어느 형태여도 최대한 정규화.
+    """
+    raw_items: List[Any] = []
+
+    if isinstance(payload, list):
+        raw_items = payload
+    elif isinstance(payload, dict):
+        for key in ("drafts", "items", "results", "data", "newsletters"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                raw_items = value
+                break
+
+        if not raw_items and any(
+            key in payload for key in ("draft_id", "id", "newsletter_id", "thread_id")
+        ):
+            raw_items = [payload]
+
+    return [
+        normalize_draft(item)
+        for item in raw_items
+        if isinstance(item, dict)
+    ]
+
+
+def safe_text(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""))
+
+
+def frequency_label(value: str) -> str:
     return {
         "daily": "매일",
         "weekly": "주간",
+        "biweekly": "격주",
         "monthly": "월간",
     }.get(value, value)
 
 
-# ---------------------------------------------------------
-# 3. Session State 초기화
-# ---------------------------------------------------------
+def status_label(value: str) -> str:
+    return {
+        "pending": "승인 대기",
+        "approved": "승인 완료",
+        "revision": "수정 중",
+        "revising": "수정 중",
+    }.get(value, value or "-")
+
+
+def show_api_error(exc: BackendAPIError):
+    st.error(
+        f"백엔드 API 오류"
+        + (f" · HTTP {exc.status_code}" if exc.status_code else "")
+    )
+    if exc.detail:
+        with st.expander("서버 응답 상세"):
+            st.code(str(exc.detail), language="text")
+
+
+# ============================================================
+# 7. Session State
+# ============================================================
 if "frequency" not in st.session_state:
     st.session_state.frequency = "daily"
 
-if "drafts" not in st.session_state:
-    samples = [
-        (
-            "draft-001",
-            "LangGraph와 Human-in-the-Loop의 최신 실무 적용 사례를 간단한 뉴스레터로 정리해 주세요.",
-            ["LangGraph", "Human-in-the-Loop"],
-            "daily",
-        ),
-        (
-            "draft-002",
-            "FastAPI와 AI Agent를 연결할 때 알아야 할 핵심 내용을 정리해 주세요.",
-            ["FastAPI", "AI Agent"],
-            "weekly",
-        ),
-        (
-            "draft-003",
-            "AWS EventBridge를 이용한 AI 자동화 운영 사례를 정리해 주세요.",
-            ["AWS EventBridge", "AI 자동화"],
-            "weekly",
-        ),
-    ]
-    st.session_state.drafts = [
-        workflow_engine.run_pipeline(
-            draft_id,
-            keywords,
-            frequency,
-            request_text=request_text,
-        )
-        for draft_id, request_text, keywords, frequency in samples
-    ]
-
 if "active_draft_id" not in st.session_state:
-    st.session_state.active_draft_id = st.session_state.drafts[0]["id"]
+    st.session_state.active_draft_id = None
 
-if "last_request" not in st.session_state:
-    st.session_state.last_request = ""
+if "last_api_message" not in st.session_state:
+    st.session_state.last_api_message = ""
 
 
-# ---------------------------------------------------------
-# 4. 상단 Header
-# ---------------------------------------------------------
-st.markdown("## 📰 AgentLetter Compact")
+# ============================================================
+# 8. Header / Backend 상태
+# ============================================================
+st.markdown("## 📰 Newsletter Frontend")
 st.markdown(
-    '<div class="flow">Research → Writer → Reviewer → ⏸ Human Approval → Send</div>',
+    '<div class="flow">'
+    'Streamlit Frontend → Remote Newsletter Agent API → Backend Workflow'
+    '</div>',
     unsafe_allow_html=True,
 )
 
+status_col, docs_col = st.columns([4, 1])
 
-# ---------------------------------------------------------
-# 5. 상단 Compact 입력 영역
-# ---------------------------------------------------------
+with status_col:
+    try:
+        status_data = backend_status()
+        st.markdown(
+            f'<div class="backend-line">🟢 Backend 연결됨 · '
+            f'{safe_text(BACKEND_BASE_URL)}</div>',
+            unsafe_allow_html=True,
+        )
+    except BackendAPIError:
+        st.markdown(
+            f'<div class="backend-line">🔴 Backend 연결 확인 필요 · '
+            f'{safe_text(BACKEND_BASE_URL)}</div>',
+            unsafe_allow_html=True,
+        )
+
+with docs_col:
+    st.link_button(
+        "API 문서",
+        DOCS_URL,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# 9. Backend 초안 목록 조회
+# ============================================================
+try:
+    draft_payload = list_drafts_raw()
+    drafts = extract_draft_list(draft_payload)
+except BackendAPIError as exc:
+    drafts = []
+    show_api_error(exc)
+
+draft_ids = [d["id"] for d in drafts if d["id"]]
+
+if draft_ids:
+    if st.session_state.active_draft_id not in draft_ids:
+        st.session_state.active_draft_id = draft_ids[0]
+else:
+    st.session_state.active_draft_id = None
+
+
+# ============================================================
+# 10. 상단 Compact 입력영역
+# ============================================================
 input1_col, input2_col = st.columns([1, 1], gap="medium")
 
-# 입력항목 1 - 뉴스레터 요청
+
+# ------------------------------------------------------------
+# 입력 ① 뉴스레터 요청
+# POST /api/newsletter/request
+# ------------------------------------------------------------
 with input1_col:
     with st.container(border=True):
         st.markdown(
@@ -246,179 +749,215 @@ with input1_col:
             key="newsletter_request_input",
         )
 
-        # PPT 요청: '주기'는 이 영역에서 제거
-        generate = st.button(
+        if st.button(
             "🚀 뉴스레터 요청",
             type="primary",
             use_container_width=True,
-        )
-
-        if generate:
+        ):
             if not newsletter_request.strip():
                 st.warning("뉴스레터 요청 내용을 입력해 주세요.")
             else:
-                new_id = f"draft-{datetime.now().strftime('%H%M%S%f')}"
-                keywords = extract_keywords(newsletter_request)
+                try:
+                    with st.spinner("백엔드에 뉴스레터 생성을 요청하고 있습니다..."):
+                        result = request_newsletter(newsletter_request.strip())
 
-                with st.status(
-                    "Research → Writer → Reviewer 실행 중",
-                    expanded=False,
-                ) as status:
-                    time.sleep(0.25)
-                    new_draft = workflow_engine.run_pipeline(
-                        new_id,
-                        keywords,
-                        st.session_state.frequency,
-                        request_text=newsletter_request.strip(),
-                    )
-                    status.update(
-                        label="✅ 생성 완료 · 인간 승인 대기",
-                        state="complete",
-                    )
+                    new_id = extract_draft_id(result)
+                    if new_id:
+                        st.session_state.active_draft_id = new_id
 
-                st.session_state.drafts.insert(0, new_draft)
-                st.session_state.active_draft_id = new_id
-                st.session_state.last_request = newsletter_request.strip()
-                st.rerun()
+                    st.session_state.last_api_message = "뉴스레터 요청이 백엔드에 전달되었습니다."
+                    st.success(st.session_state.last_api_message)
+                    st.rerun()
+
+                except BackendAPIError as exc:
+                    show_api_error(exc)
 
 
-# 입력항목 2 - 수정 요청 / 최종 승인 / 주기
+# ------------------------------------------------------------
+# 입력 ② 수정 요청 / 최종 승인 + 주기
+# POST /api/drafts/{draft_id}/revise
+# POST /api/drafts/{draft_id}/approve
+# ------------------------------------------------------------
 with input2_col:
     with st.container(border=True):
         st.markdown(
-            '<div class="section-label">② 마음에 안 들 경우 — 수정 요청</div>',
+            '<div class="section-label">② 수정 요청 / 최종 승인</div>',
             unsafe_allow_html=True,
         )
 
-        draft_options_for_feedback = [d["id"] for d in st.session_state.drafts]
-        feedback_title_map = {
-            d["id"]: d["title"] for d in st.session_state.drafts
-        }
+        if drafts:
+            title_map = {d["id"]: d["title"] for d in drafts}
+            active_index = draft_ids.index(st.session_state.active_draft_id)
 
-        if st.session_state.active_draft_id not in draft_options_for_feedback:
-            st.session_state.active_draft_id = draft_options_for_feedback[0]
-
-        active_index = draft_options_for_feedback.index(
-            st.session_state.active_draft_id
-        )
-
-        target_id = st.selectbox(
-            "수정/승인 대상 뉴스",
-            draft_options_for_feedback,
-            index=active_index,
-            format_func=lambda draft_id: feedback_title_map[draft_id],
-        )
-        st.session_state.active_draft_id = target_id
-
-        # PPT 요청: 파란 박스의 두 입력창을 하나로 합침
-        change_request = st.text_area(
-            "이렇게 바꾸어주세요",
-            placeholder=(
-                "예: 너무 기술적인 표현은 줄이고, 핵심 뉴스 5개를 먼저 보여준 뒤 "
-                "각 항목을 실무자가 이해하기 쉽게 설명해 주세요."
-            ),
-            key="change_request_combined",
-        )
-
-        active = find_draft(st.session_state.active_draft_id)
-
-        # PPT 요청: '주기'를 '최종 승인' 옆으로 이동
-        action1, action2, action3 = st.columns([1.0, 1.15, 0.9])
-        with action1:
-            revise = st.button(
-                "↻ 수정 요청",
-                use_container_width=True,
-                disabled=active is None,
+            target_id = st.selectbox(
+                "수정/승인 대상 뉴스",
+                draft_ids,
+                index=active_index,
+                format_func=lambda draft_id: title_map.get(draft_id, draft_id),
             )
-        with action2:
-            approve = st.button(
-                "✅ 최종 승인",
-                type="primary",
-                use_container_width=True,
-                disabled=active is None or active.get("status") == "approved",
-            )
-        with action3:
-            selected_frequency = st.selectbox(
-                "주기",
-                ["daily", "weekly", "monthly"],
-                index=["daily", "weekly", "monthly"].index(st.session_state.frequency),
-                format_func=frequency_label,
-                key="frequency_select",
-            )
-            st.session_state.frequency = selected_frequency
+            st.session_state.active_draft_id = target_id
 
-        if revise and active:
-            if not change_request.strip():
-                st.warning("'이렇게 바꾸어주세요'에 수정 요청 내용을 입력해 주세요.")
-            else:
-                feedback = f"[수정 요청] {change_request.strip()}"
+            change_request = st.text_area(
+                "이렇게 바꾸어주세요",
+                placeholder=(
+                    "예: 너무 기술적인 표현은 줄이고, 핵심 뉴스 5개를 먼저 보여준 뒤 "
+                    "각 항목을 이해하기 쉽게 설명해 주세요."
+                ),
+                key="change_request_combined",
+            )
+
+            action1, action2, action3 = st.columns([1.0, 1.1, .9])
+
+            with action1:
+                revise_clicked = st.button(
+                    "↻ 수정 요청",
+                    use_container_width=True,
+                )
+
+            with action2:
+                approve_clicked = st.button(
+                    "✅ 최종 승인",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            with action3:
+                selected_frequency = st.selectbox(
+                    "주기",
+                    ["daily", "weekly", "monthly"],
+                    index=["daily", "weekly", "monthly"].index(
+                        st.session_state.frequency
+                    ),
+                    format_func=frequency_label,
+                    key="frequency_select",
+                )
+                st.session_state.frequency = selected_frequency
+
+            if revise_clicked:
+                if not change_request.strip():
+                    st.warning("'이렇게 바꾸어주세요'에 수정 내용을 입력해 주세요.")
+                else:
+                    try:
+                        with st.spinner("백엔드에 수정 요청을 전달하고 있습니다..."):
+                            revise_draft(
+                                st.session_state.active_draft_id,
+                                change_request.strip(),
+                            )
+                        st.success("수정 요청이 백엔드에 전달되었습니다.")
+                        st.rerun()
+
+                    except BackendAPIError as exc:
+                        show_api_error(exc)
+
+            if approve_clicked:
                 try:
-                    updated = workflow_engine.resume_revision(
-                        active["id"],
-                        feedback,
+                    with st.spinner("최종 승인과 주기 설정을 백엔드에 전달하고 있습니다..."):
+                        approve_draft(
+                            st.session_state.active_draft_id,
+                            st.session_state.frequency,
+                        )
+                    st.success(
+                        f"최종 승인되었습니다. 주기: "
+                        f"{frequency_label(st.session_state.frequency)}"
                     )
-                    # 현재 선택한 주기도 결과에 반영
-                    updated["frequency"] = st.session_state.frequency
-                    if active["id"] in workflow_engine.checkpoints:
-                        workflow_engine.checkpoints[active["id"]]["frequency"] = st.session_state.frequency
-                    replace_draft(updated)
-                    st.session_state.active_draft_id = updated["id"]
-                    st.success("Writer → Reviewer 재실행을 완료했습니다.")
                     st.rerun()
-                except KeyError:
-                    st.error(
-                        "해당 초안의 체크포인트를 찾지 못했습니다. "
-                        "새 뉴스레터를 다시 생성해 주세요."
-                    )
 
-        if approve and active:
-            try:
-                # 최종 승인 직전 선택한 주기를 체크포인트에 반영
-                if active["id"] in workflow_engine.checkpoints:
-                    workflow_engine.checkpoints[active["id"]]["frequency"] = st.session_state.frequency
-                updated = workflow_engine.resume_approval(active["id"])
-                updated["frequency"] = st.session_state.frequency
-                replace_draft(updated)
-                st.success(
-                    f"최종 승인되었습니다. 발송 주기: {frequency_label(st.session_state.frequency)}"
+                except BackendAPIError as exc:
+                    show_api_error(exc)
+
+        else:
+            st.info(
+                "백엔드에 조회 가능한 초안이 없습니다. "
+                "먼저 왼쪽에서 뉴스레터를 요청해 주세요."
+            )
+
+            # 초안이 없어도 주기 UI 위치를 유지
+            _, _, period_col = st.columns([1.0, 1.1, .9])
+            with period_col:
+                selected_frequency = st.selectbox(
+                    "주기",
+                    ["daily", "weekly", "monthly"],
+                    index=["daily", "weekly", "monthly"].index(
+                        st.session_state.frequency
+                    ),
+                    format_func=frequency_label,
+                    key="frequency_select_empty",
                 )
-                st.rerun()
-            except KeyError:
-                st.error(
-                    "해당 초안의 체크포인트를 찾지 못했습니다. "
-                    "새 뉴스레터를 다시 생성해 주세요."
-                )
+                st.session_state.frequency = selected_frequency
 
 
-# ---------------------------------------------------------
-# 6. 선택 뉴스 헤드 카드만 표시
-#    PPT 빨간 박스 요청:
-#    - '③ 선택했던 뉴스들의 헤드 내용' 제목/설명 숨김
-#    - '출력할 뉴스 헤드 선택' multiselect 숨김
-#    - '선택 뉴스의 상세 내용 / 검수 결과' expander 숨김
-# ---------------------------------------------------------
-active = find_draft(st.session_state.active_draft_id)
-if active:
-    safe_title = html.escape(str(active.get("title", "")))
-    safe_summary = html.escape(str(active.get("summary", "")))
-    safe_date = html.escape(str(active.get("date", "")))
-    safe_frequency = html.escape(frequency_label(str(active.get("frequency", "daily"))))
-    safe_status = html.escape(short_status(str(active.get("status", ""))))
+# ============================================================
+# 11. 화면 출력 - Backend가 만든 뉴스 헤드 목록
+# ============================================================
+if drafts:
+    st.markdown("---")
 
-    st.markdown(
-        f"""
-        <div class="compact-card">
-          <div class="head-title">{safe_title}</div>
-          <div class="head-summary">{safe_summary}</div>
-          <div class="head-meta">
-            검수 {active.get('score', '-')}점 · {safe_status} · 주기 {safe_frequency} · {safe_date}
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    # compact하게 최근/조회된 헤드만 표시
+    for draft in drafts[:8]:
+        selected = draft["id"] == st.session_state.active_draft_id
+        selected_class = " selected" if selected else ""
+
+        title = safe_text(draft["title"])
+        summary = safe_text(draft["summary"])
+        status = safe_text(status_label(draft["status"]))
+        score = safe_text(draft["score"] if draft["score"] != "" else "-")
+        period = safe_text(frequency_label(draft["frequency"]) if draft["frequency"] else "-")
+        date = safe_text(draft["date"])
+
+        meta_parts = [
+            f"검수 {score}점" if score != "-" else "검수 -",
+            status,
+            f"주기 {period}",
+        ]
+        if date:
+            meta_parts.append(date)
+
+        st.markdown(
+            f"""
+            <div class="compact-card{selected_class}">
+              <div class="head-title">{title}</div>
+              <div class="head-summary">{summary}</div>
+              <div class="head-meta">{" · ".join(meta_parts)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
+# 12. API 연동 정보
+# ============================================================
+with st.expander("연동된 Backend API 확인", expanded=False):
+    st.code(
+        f"""Backend Base URL
+{BACKEND_BASE_URL}
+
+① 뉴스레터 요청
+POST /api/newsletter/request
+
+② 수정 요청
+POST /api/drafts/{{draft_id}}/revise
+
+③ 최종 승인 + 주기 설정
+POST /api/drafts/{{draft_id}}/approve
+
+목록 조회
+GET /api/drafts
+
+상세 조회
+GET /api/drafts/{{draft_id}}
+
+상태 확인
+GET /api/status
+""",
+        language="text",
     )
 
-st.caption(
-    "현재 리서치/작성/검수 내용과 발송은 데모 로직입니다. "
-    "실제 외부 뉴스 검색·LLM·AWS SES 연동은 별도 연결이 필요합니다."
-)
+    spec = get_openapi_spec()
+    if spec:
+        st.success("OpenAPI 스키마를 읽어 Request Body 필드명을 자동 인식 중입니다.")
+    else:
+        st.warning(
+            "OpenAPI 스키마를 읽지 못했습니다. "
+            "request_text / feedback / frequency 필드명으로 fallback합니다."
+        )

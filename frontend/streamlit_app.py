@@ -80,6 +80,14 @@ st.markdown(
           font-family: var(--app-font) !important;
       }
 
+      /* Streamlit 기본 Deploy/메뉴 헤더를 사용하지 않는다. */
+      header[data-testid="stHeader"],
+      [data-testid="stToolbar"],
+      [data-testid="stDecoration"],
+      #MainMenu {
+          display: none !important;
+      }
+
       .block-container {
           padding-top: .85rem;
           padding-bottom: 1rem;

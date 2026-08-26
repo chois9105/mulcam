@@ -105,26 +105,13 @@ def to_dashboard_html(
 # ---------------------------------------------------------------
 
 BRAND = "#E8453C"          # 화면 버튼과 같은 빨강
-INK = "#1F2328"
-SOFT = "#5B6470"
-LINE = "#E5E7EB"
-BG = "#F5F5F7"
+INK = "#1F2328"            # 제목
+SOFT = "#5B6470"           # 본문
+FAINT = "#9AA1AB"          # 잔글씨
+LINE = "#E5E7EB"           # 얇은 테두리
+BG = "#FFFFFF"
 
 _FONT = "-apple-system, 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif"
-
-
-def _card(title_html: str, body_html: str) -> str:
-    """기사 한 건을 카드로 감싼다."""
-    return (
-        f'<tr><td style="padding:0 0 14px;">'
-        f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
-        f'style="border:1px solid {LINE};border-radius:10px;border-left:4px solid {BRAND};">'
-        f'<tr><td style="padding:16px 18px;">'
-        f'<div style="font-size:15.5px;font-weight:700;color:{INK};line-height:1.5;'
-        f'margin-bottom:6px;">{title_html}</div>'
-        f'<div style="font-size:14px;color:{SOFT};line-height:1.7;">{body_html}</div>'
-        f'</td></tr></table></td></tr>'
-    )
 
 
 def _split_items(markdown_text: str):
@@ -132,10 +119,9 @@ def _split_items(markdown_text: str):
     '**제목** [n]' + 설명 형태를 카드 단위로 쪼갠다.
     형식이 다르면 통째로 하나로 돌려준다.
     """
-    lines = markdown_text.splitlines()
     headline, items, cur = "", [], None
 
-    for ln in lines:
+    for ln in markdown_text.splitlines():
         t = ln.strip()
         if not t:
             continue
@@ -160,19 +146,39 @@ def to_email_html(
     markdown_text: str,
     sources: Optional[List[dict]] = None,
     footer: str = "수집된 기사를 근거로 자동 생성된 뉴스레터입니다.",
+    meta: str = "",
 ) -> str:
-    """이메일로 보낼 전체 HTML 문서를 만든다."""
+    """
+    이메일 HTML.
+
+    화면(AgentLetter Compact)의 생김새를 그대로 옮겼다.
+      - 흰 바탕에 얇은 회색 테두리 카드
+      - 제목은 굵은 검정, 본문은 회색, 근거 번호만 빨강
+      - 카드 아래 회색 잔글씨 메타 줄
+
+    메일 프로그램은 <style> 을 지우는 경우가 많아 스타일을 각 요소에 직접 넣는다.
+    """
     headline, items = _split_items(markdown_text)
 
     if items:
         cards = ""
         for it in items:
-            ref = (f'<span style="color:{BRAND};font-weight:600;">&nbsp;{it["ref"]}</span>'
-                   if it["ref"] else "")
-            cards += _card(it["title"] + ref, " ".join(it["body"]))
-        body_html = f'<table width="100%" cellpadding="0" cellspacing="0" border="0">{cards}</table>'
+            ref = (f'<span style="color:{BRAND};font-weight:600;font-size:13px;">'
+                   f'&nbsp;{it["ref"]}</span>' if it["ref"] else "")
+            cards += (
+                f'<tr><td style="padding:0 0 12px;">'
+                f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
+                f'style="border:1px solid {LINE};border-radius:9px;">'
+                f'<tr><td style="padding:16px 18px;">'
+                f'<div style="font-size:15.5px;font-weight:700;color:{INK};'
+                f'line-height:1.5;margin-bottom:6px;">{it["title"]}{ref}</div>'
+                f'<div style="font-size:14px;color:{SOFT};line-height:1.7;">'
+                f'{" ".join(it["body"])}</div>'
+                f'</td></tr></table></td></tr>'
+            )
+        body_html = (f'<table width="100%" cellpadding="0" cellspacing="0" '
+                     f'border="0">{cards}</table>')
     else:
-        # 형식이 예상과 다르면 통째로 변환해서 넣는다
         body_html = (f'<div style="font-size:14.5px;color:{INK};line-height:1.8;">'
                      f'{md_to_html(markdown_text)}</div>')
 
@@ -185,43 +191,47 @@ def to_email_html(
                 f'<span style="color:{BRAND};font-weight:600;">[{sc.get("n", i)}]</span> '
                 f'<a href="{sc.get("link", "")}" style="color:{INK};text-decoration:none;">'
                 f'{sc.get("title", "")}</a> '
-                f'<span style="color:#9AA1AB;">{sc.get("source", "")}</span></div>'
+                f'<span style="color:{FAINT};">{sc.get("source", "")}</span></div>'
             )
         src_html = (
-            f'<div style="margin-top:26px;padding-top:18px;border-top:1px solid {LINE};">'
-            f'<div style="font-size:13px;font-weight:700;color:{INK};margin-bottom:12px;">'
-            f'근거 기사 &middot; 제목을 누르면 원문으로 이동합니다</div>{rows}</div>'
+            f'<div style="margin-top:24px;padding-top:18px;border-top:1px solid {LINE};">'
+            f'<div style="font-size:13.5px;font-weight:700;color:{INK};margin-bottom:6px;">'
+            f'근거 기사</div>'
+            f'<div style="font-size:12.5px;color:{FAINT};margin-bottom:12px;">'
+            f'제목을 누르면 원문으로 이동합니다.</div>{rows}</div>'
         )
+
+    meta_html = (f'<div style="font-size:12.5px;color:{FAINT};margin-top:2px;'
+                 f'margin-bottom:20px;">{meta}</div>') if meta else ""
 
     return f"""<!DOCTYPE html>
 <html lang="ko">
 <head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title></head>
-<body style="margin:0;padding:24px 12px;background:{BG};font-family:{_FONT};">
+<body style="margin:0;padding:28px 16px 44px;background:{BG};font-family:{_FONT};">
 <table width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr><td align="center">
-  <table width="620" cellpadding="0" cellspacing="0" border="0"
-         style="max-width:620px;background:#ffffff;border-radius:14px;overflow:hidden;">
+  <table width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;">
 
-    <tr><td style="padding:22px 26px;border-bottom:3px solid {BRAND};">
-      <div style="font-size:19px;font-weight:700;color:{INK};letter-spacing:-0.2px;">
+    <tr><td style="padding-bottom:22px;">
+      <div style="font-size:26px;font-weight:700;color:{INK};letter-spacing:-.5px;">
         &#128240;&nbsp; AgentLetter
       </div>
-      <div style="font-size:12px;color:#9AA1AB;margin-top:3px;">
+      <div style="font-size:12.5px;color:{FAINT};margin-top:4px;">
         Research &rarr; Writer &rarr; Reviewer &rarr; Human Approval &rarr; Send
       </div>
     </td></tr>
 
-    <tr><td style="padding:26px 26px 8px;">
-      <div style="font-size:21px;font-weight:700;color:{INK};line-height:1.4;
-                  margin-bottom:20px;">{headline or title}</div>
+    <tr><td>
+      <div style="font-size:19px;font-weight:700;color:{INK};line-height:1.45;">
+        {headline or title}</div>
+      {meta_html}
       {body_html}
       {src_html}
     </td></tr>
 
-    <tr><td style="padding:18px 26px;background:#FAFAFB;border-top:1px solid {LINE};
-                   font-size:12px;color:#9AA1AB;line-height:1.6;">
+    <tr><td style="padding-top:22px;font-size:12.5px;color:{FAINT};line-height:1.6;">
       {footer}
     </td></tr>
 

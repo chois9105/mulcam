@@ -148,9 +148,24 @@ def send_draft(draft: Dict, to: Optional[List[str]] = None) -> Dict:
         return {"sent": False, "reason": "받는 사람이 없습니다."}
 
     subject = f"[뉴스레터] {draft.get('title', '오늘의 뉴스')}"
+
+    # 화면 카드에 있는 잔글씨 줄과 같은 형식
+    #   검수 85점 · 기사 7건 · 2026.08.26 09:15
+    bits = []
+    if draft.get("score"):
+        bits.append(f"검수 {draft['score']}점")
+    if draft.get("sources"):
+        bits.append(f"기사 {len(draft['sources'])}건")
+    if draft.get("frequency_label"):
+        bits.append(f"주기 {draft['frequency_label']}")
+    if draft.get("created_at"):
+        bits.append(str(draft["created_at"]))
+    meta = " · ".join(bits)
+
     html = to_email_html(
         title=draft.get("title", "뉴스레터"),
         markdown_text=draft.get("markdown", ""),
+        meta=meta,
         sources=[
             {"n": i, "title": s.get("title", ""), "source": s.get("summary", ""),
              "link": s.get("url", "")}

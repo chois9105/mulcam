@@ -129,12 +129,27 @@ class NewsletterService:
         query = self.analyzer.to_query(plan)
 
         # 2. 기사 검색 + 3. 기사별 요약
-        result = self.rag.summarize(query, style=DEFAULT_STYLE, k=plan.article_count)
+        result = self.rag.summarize(query, style=DEFAULT_STYLE,
+                                    k=plan.article_count,
+                                    keywords=plan.keywords)
         markdown = result["newsletter"]
         sources = result["sources"]
 
+        # 관련 기사가 하나도 없으면 억지로 만들지 않는다.
+        # (검색은 항상 최소 몇 건을 돌려주므로, 관련성 판단은 작성 모델이 한다)
+        if "NO_RELEVANT_NEWS" in markdown:
+            raise ValueError(
+                f"'{query}' 와 관련된 뉴스를 찾지 못했습니다. "
+                "다른 키워드로 시도하거나, 뉴스를 먼저 수집해 주세요."
+            )
+
         # 4. 한국어 다듬기
         markdown = self.polisher.polish(markdown)
+
+        # 실제로 요약에 쓰인 근거만 남긴다.
+        # 검색이 가져왔지만 무관해서 빠진 기사가 근거 목록에 남으면
+        # 화면에 "근거 8건 / 항목 1개" 처럼 어긋나 보인다.
+        markdown, sources = self._used_sources(markdown, sources)
 
         # 5. 검수
         review = self.reviewer.review(markdown, sources)
@@ -158,7 +173,8 @@ class NewsletterService:
         draft = store.get_draft(draft_id)
 
         # 원래 근거 기사를 그대로 다시 쓴다 (검색을 다시 하지 않는다)
-        docs = self.rag.search(draft["_query"], k=draft["_article_count"])
+        kws = draft.get("_keywords") or draft["_query"].split()
+        docs = self.rag.search_multi(kws, k=draft["_article_count"])
         context = self.rag._format_context(docs)
 
         # 기존 요약에 항목이 몇 개였는지 세어, 그 수를 유지하라고 알려준다.
@@ -174,7 +190,7 @@ class NewsletterService:
 
         markdown = self.polisher.polish(markdown)
 
-        sources = self.rag._sources(docs)
+        markdown, sources = self._used_sources(markdown, self.rag._sources(docs))
         review = self.reviewer.review(markdown, sources)
         loop = draft["revision_count"] + 1
         audit = self.reviewer.audit_report(review, loop_count=loop)
@@ -242,6 +258,48 @@ class NewsletterService:
         store.save_draft(draft)
         return draft
 
+    @staticmethod
+    def _used_sources(markdown: str, sources: List[Dict]):
+        """
+        본문에 실제로 인용된 기사만 남기고 번호를 1부터 다시 매긴다.
+        본문의 번호도 함께 바꿔서 근거 목록과 어긋나지 않게 한다.
+
+        반환: (바뀐 본문, 남은 근거 목록)
+
+        왜 필요한가:
+          검색은 관련이 옅은 기사까지 가져온다. 작성 모델이 그런 것을 빼면
+          근거 목록에만 남아 "근거 8건인데 항목 1개" 처럼 보인다.
+          또 번호만 다시 매기고 본문을 그대로 두면 본문 [3] 을 눌러도
+          근거 목록에 [3] 이 없는 상태가 된다.
+        """
+        used = sorted({int(n) for n in re.findall(r"\[(\d+)\]", markdown)})
+        if not used:
+            return markdown, sources
+
+        by_no = {s.get("n"): s for s in sources}
+        kept, mapping = [], {}
+        for new_no, old_no in enumerate(used, 1):
+            src = by_no.get(old_no)
+            if not src:
+                continue
+            item = dict(src)
+            item["n"] = new_no
+            kept.append(item)
+            mapping[old_no] = new_no
+
+        if not kept:
+            return markdown, sources
+
+        # 본문 번호도 새 번호로 바꾼다.
+        # 한 번에 바꾸면 [1]->[2], [2]->[1] 같은 경우가 꼬이므로
+        # 임시 표시를 거쳐 두 단계로 바꾼다.
+        out = re.sub(r"\[(\d+)\]",
+                     lambda m: f"[[#{mapping[int(m.group(1))]}]]"
+                     if int(m.group(1)) in mapping else m.group(0),
+                     markdown)
+        out = re.sub(r"\[\[#(\d+)\]\]", lambda m: f"[{m.group(1)}]", out)
+        return out, kept
+
     # ---------- 저장 ----------
     def _save(self, *, markdown, sources, review, audit, request_text,
               plan, query, title_hint, draft_id=None,
@@ -272,6 +330,7 @@ class NewsletterService:
             # 내부용 (응답에서는 빼고 내보낸다)
             "_request_text": request_text,
             "_query": query,
+            "_keywords": (plan.keywords if plan else None),
             "_article_count": article_count,
             "_last_direction": direction,
         }

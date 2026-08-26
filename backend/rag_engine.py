@@ -68,9 +68,15 @@ STYLE_PROMPTS = {
          "  **기사 제목** [n]\n"
          "  한두 문장으로 무슨 일인지 설명. 숫자·기관명 같은 핵심 사실을 넣는다.\n"
          "- 기사끼리 묶어서 뭉뚱그리지 말고, 한 기사당 한 항목으로 따로 쓴다.\n"
-         "- **아래 [기사]에 있는 것을 모두 다룬다. 임의로 빼지 않는다.**\n"
-         "  주제와 가까운 기사를 앞에, 먼 기사를 뒤에 배치한다.\n"
-         "  기사 수만큼 항목이 나와야 한다.\n" + COMMON_RULES),
+         "- 주제와 **조금이라도 관련된 기사는 모두 다룬다.** 가까운 것부터 배치한다.\n"
+         "- 주제와 **전혀 무관한 기사는 뺀다.**\n"
+         "\n"
+         "**중요**: 아래 [기사] 중에 주제와 **조금이라도 이어지는 것이**\n"
+         "**하나도 없을 때만**, 억지로 만들어내지 말고 아래 한 줄만 출력한다.\n"
+         "(같은 분야이거나 배경이 되는 기사면 관련 있는 것으로 본다.\n"
+         " 한 건이라도 이어지면 그것을 다룬다.)\n"
+         "NO_RELEVANT_NEWS\n"
+         "(다른 말은 덧붙이지 않는다. 제목도 쓰지 않는다.)\n" + COMMON_RULES),
         ("human", "'{topic}' 관련 기사들을 간단히 요약해주세요."),
     ]),
 
@@ -219,6 +225,60 @@ class NewsRAG:
             kept = [doc for doc, _ in scored[:min_keep]]
         return kept
 
+    def search_multi(self, keywords: List[str], k: int = 8) -> List[Document]:
+        """
+        키워드를 하나씩 따로 검색해서 합친다.
+
+        여러 낱말을 붙여 한 번에 검색하면 어느 쪽과도 잘 안 맞는다.
+        실제로 'AI 반도체' 로 검색했을 때 임상시험·자동차 기사가 나오고,
+        정작 색인에 있던 '중국 반도체 ETF', '뤼튼 AI 유니콘' 은 빠졌다.
+        낱말별로 찾아 합치면 둘 다 걸린다.
+        """
+        if not keywords:
+            return []
+
+        # 'AI 반도체' 처럼 한 덩어리로 온 키워드는 낱말로도 쪼개서 함께 찾는다.
+        # 분석 단계에서 붙여서 뽑는 경우가 있는데, 붙은 채로는 어느 쪽과도 안 맞는다.
+        terms = []
+        for kw in keywords:
+            kw = kw.strip()
+            if not kw:
+                continue
+            terms.append(kw)
+            parts = [w for w in kw.split() if len(w) >= 2]
+            if len(parts) > 1:
+                terms.extend(parts)
+
+        # 중복 제거 (순서 유지)
+        seen_t, keywords = set(), []
+        for t in terms:
+            if t not in seen_t:
+                seen_t.add(t)
+                keywords.append(t)
+
+        if len(keywords) == 1:
+            return self.search(keywords[0], k=k, min_keep=max(3, k // 2))
+
+        # 키워드마다 몇 건씩 가져올지 (최소 2건)
+        per = max(2, k // len(keywords))
+        seen, merged = set(), []
+        for kw in keywords:
+            for doc in self.search(kw, k=per, min_keep=2):
+                key = doc.metadata.get("link") or doc.page_content[:80]
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(doc)
+
+        # 합친 것이 너무 적으면 전체 문장으로 한 번 더 찾아 보탠다
+        if len(merged) < 3:
+            for doc in self.search(" ".join(keywords), k=k):
+                key = doc.metadata.get("link") or doc.page_content[:80]
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(doc)
+        return merged[:k]
+
     @staticmethod
     def _format_context(docs: List[Document]) -> str:
         lines = []
@@ -258,7 +318,8 @@ class NewsRAG:
         }).content
         return {"question": question, "answer": answer, "sources": self._sources(docs)}
 
-    def summarize(self, topic: str, style: str = DEFAULT_STYLE, k: int = None) -> Dict:
+    def summarize(self, topic: str, style: str = DEFAULT_STYLE, k: int = None,
+                  keywords: List[str] = None) -> Dict:
         """
         요약: 주제 관련 기사를 모아 뉴스레터를 만든다.
 
@@ -272,9 +333,10 @@ class NewsRAG:
         if k is None:
             k = STYLE_INFO[style]["권장_기사수"]
 
-        # 요약은 소재가 어느 정도 있어야 하므로 최소 절반은 남긴다.
-        # (리서치용 ask() 는 정확도가 우선이라 min_keep 을 낮게 둔다)
-        docs = self.search(topic, k=k, min_keep=max(3, k // 2))
+        # 키워드가 여러 개면 낱말별로 찾아서 합친다.
+        # 'AI 반도체' 를 통째로 검색하면 어느 쪽과도 안 맞는 기사가 나온다.
+        docs = (self.search_multi(keywords, k=k) if keywords
+                else self.search(topic, k=k, min_keep=max(3, k // 2)))
         chain = STYLE_PROMPTS[style] | self.llm
         newsletter = chain.invoke({
             "context": self._format_context(docs),

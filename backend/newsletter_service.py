@@ -23,6 +23,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from adapters import extract_summary, extract_title, to_research_sources
 from html_render import to_dashboard_html
 from polisher import Polisher
+import compose
+import live_search
 import store
 from mailer import send_draft
 from rag_engine import DEFAULT_STYLE, STYLE_PROMPTS, NewsRAG
@@ -128,19 +130,33 @@ class NewsletterService:
         plan = self.analyzer.analyze(request_text)
         query = self.analyzer.to_query(plan)
 
-        # 2. 기사 검색 + 3. 기사별 요약
-        result = self.rag.summarize(query, style=DEFAULT_STYLE,
-                                    k=plan.article_count,
-                                    keywords=plan.keywords)
+        # 2. 기사 모으기 — 두 곳에서 가져와 합친다
+        #
+        #    (가) 미리 모아둔 색인 : 국내 16곳, 본문 900자, 원문 링크
+        #    (나) 실시간 검색      : 키워드로 지금 찾아옴, 빠짐이 없다
+        #
+        #    미리 모아둔 것만 쓰면 그 안에 없는 주제를 못 만든다.
+        #    실시간만 쓰면 본문이 없어 요약이 얕아진다. 그래서 둘 다 쓴다.
+        indexed = compose.docs_to_items(
+            self.rag.search_multi(plan.keywords, k=plan.article_count)
+        )
+        live = live_search.search(plan.keywords, per_keyword=6)
+        items = live_search.merge_with_indexed(indexed, live,
+                                               limit=plan.article_count)
+        if not items:
+            raise ValueError(f"'{query}' 와 관련된 뉴스를 찾지 못했습니다.")
+
+        # 3. 기사별 요약
+        result = compose.summarize_items(self.rag.llm, query, items,
+                                         style=DEFAULT_STYLE)
         markdown = result["newsletter"]
         sources = result["sources"]
 
         # 관련 기사가 하나도 없으면 억지로 만들지 않는다.
-        # (검색은 항상 최소 몇 건을 돌려주므로, 관련성 판단은 작성 모델이 한다)
         if "NO_RELEVANT_NEWS" in markdown:
             raise ValueError(
                 f"'{query}' 와 관련된 뉴스를 찾지 못했습니다. "
-                "다른 키워드로 시도하거나, 뉴스를 먼저 수집해 주세요."
+                "다른 키워드로 시도해 주세요."
             )
 
         # 4. 한국어 다듬기
@@ -174,12 +190,17 @@ class NewsletterService:
 
         # 원래 근거 기사를 그대로 다시 쓴다 (검색을 다시 하지 않는다)
         kws = draft.get("_keywords") or draft["_query"].split()
-        docs = self.rag.search_multi(kws, k=draft["_article_count"])
-        context = self.rag._format_context(docs)
+        indexed = compose.docs_to_items(
+            self.rag.search_multi(kws, k=draft["_article_count"])
+        )
+        live = live_search.search(kws, per_keyword=6)
+        items = live_search.merge_with_indexed(indexed, live,
+                                               limit=draft["_article_count"])
+        context = compose.format_items(items)
 
         # 기존 요약에 항목이 몇 개였는지 세어, 그 수를 유지하라고 알려준다.
         # (쉽게 써 달라는 요청에 모델이 기사를 통째로 버리는 일이 있었다)
-        item_count = len(re.findall(r"^\*\*.+\*\*", draft["markdown"], flags=re.M)) or len(docs)
+        item_count = len(re.findall(r"^\*\*.+\*\*", draft["markdown"], flags=re.M)) or len(items)
 
         markdown = (REVISE_PROMPT | self.rag.llm).invoke({
             "context": context,
@@ -190,7 +211,8 @@ class NewsletterService:
 
         markdown = self.polisher.polish(markdown)
 
-        markdown, sources = self._used_sources(markdown, self.rag._sources(docs))
+        markdown, sources = self._used_sources(markdown,
+                                               compose.items_to_sources(items))
         review = self.reviewer.review(markdown, sources)
         loop = draft["revision_count"] + 1
         audit = self.reviewer.audit_report(review, loop_count=loop)

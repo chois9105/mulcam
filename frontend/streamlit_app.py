@@ -751,6 +751,16 @@ if "active_draft_id" not in st.session_state:
 if "last_api_message" not in st.session_state:
     st.session_state.last_api_message = ""
 
+if "target_draft_select" not in st.session_state:
+    st.session_state.target_draft_select = ""
+
+
+def sync_active_draft():
+    """사용자가 드롭다운에서 고른 초안만 현재 미리보기로 연다."""
+    st.session_state.active_draft_id = (
+        st.session_state.target_draft_select or None
+    )
+
 
 # ============================================================
 # 8. Header / Backend 상태
@@ -800,11 +810,19 @@ except BackendAPIError as exc:
 
 draft_ids = [d["id"] for d in drafts if d["id"]]
 
-if draft_ids:
-    if st.session_state.active_draft_id not in draft_ids:
-        st.session_state.active_draft_id = draft_ids[0]
-else:
+if st.session_state.pop("clear_active_draft", False):
     st.session_state.active_draft_id = None
+    st.session_state.target_draft_select = ""
+
+pending_id = st.session_state.pop("pending_active_draft_id", None)
+if pending_id in draft_ids:
+    st.session_state.active_draft_id = pending_id
+    st.session_state.target_draft_select = pending_id
+
+if st.session_state.active_draft_id not in draft_ids:
+    st.session_state.active_draft_id = None
+if st.session_state.target_draft_select not in draft_ids:
+    st.session_state.target_draft_select = ""
 
 
 # ============================================================
@@ -837,7 +855,7 @@ with input1_col:
                         result = request_newsletter(newsletter_request.strip())
                     new_id = extract_draft_id(result)
                     if new_id:
-                        st.session_state.active_draft_id = new_id
+                        st.session_state.pending_active_draft_id = new_id
                     st.session_state.last_api_message = (
                         "뉴스레터 요청이 백엔드에 전달되었습니다."
                     )
@@ -854,16 +872,24 @@ with input2_col:
 
         if drafts:
             title_map = {d["id"]: d["title"] for d in drafts}
-            active_index = draft_ids.index(st.session_state.active_draft_id)
             target_id = st.selectbox(
                 "수정/승인 대상 뉴스",
-                draft_ids,
-                index=active_index,
-                format_func=lambda draft_id: title_map.get(draft_id, draft_id),
+                [""] + draft_ids,
+                format_func=lambda draft_id: (
+                    "— 뉴스레터를 선택해 주세요 —"
+                    if not draft_id else title_map.get(draft_id, draft_id)
+                ),
+                key="target_draft_select",
+                on_change=sync_active_draft,
             )
-            st.session_state.active_draft_id = target_id
-            selected_draft = next(d for d in drafts if d["id"] == target_id)
-            is_approved = selected_draft["status"] in ("approved", "sent")
+            selected_draft = next(
+                (d for d in drafts if d["id"] == target_id), None
+            )
+            is_approved = bool(
+                selected_draft
+                and selected_draft["status"] in ("approved", "sent")
+            )
+            controls_disabled = selected_draft is None or is_approved
 
             if is_approved:
                 st.info("이미 승인된 뉴스레터입니다. 수정하거나 다시 승인할 수 없습니다.")
@@ -875,20 +901,22 @@ with input2_col:
                     "각 항목을 이해하기 쉽게 설명해 주세요."
                 ),
                 key="change_request_combined",
-                disabled=is_approved,
+                disabled=controls_disabled,
             )
 
             action1, action2, action3 = st.columns([1.0, 1.1, .9])
             with action1:
                 revise_clicked = st.button(
-                    "↻ 수정 요청", use_container_width=True, disabled=is_approved
+                    "↻ 수정 요청",
+                    use_container_width=True,
+                    disabled=controls_disabled,
                 )
             with action2:
                 approve_clicked = st.button(
                     "✅ 최종 승인",
                     type="primary",
                     use_container_width=True,
-                    disabled=is_approved,
+                    disabled=controls_disabled,
                 )
             with action3:
                 selected_frequency = st.selectbox(
@@ -897,7 +925,7 @@ with input2_col:
                     index=FREQUENCY_OPTIONS.index(st.session_state.frequency),
                     format_func=frequency_label,
                     key="frequency_select",
-                    disabled=is_approved,
+                    disabled=controls_disabled,
                 )
                 st.session_state.frequency = selected_frequency
 
@@ -933,6 +961,7 @@ with input2_col:
                         "최종 승인되었습니다. 주기: "
                         f"{frequency_label(st.session_state.frequency)}"
                     )
+                    st.session_state.clear_active_draft = True
                     st.rerun()
                 except BackendAPIError as exc:
                     show_api_error(exc)
@@ -960,7 +989,7 @@ if st.session_state.last_api_message:
 # ============================================================
 # 11. 선택한 뉴스레터 템플릿 표시
 # ============================================================
-if drafts:
+if drafts and st.session_state.active_draft_id:
     st.markdown("---")
     try:
         active_detail = get_draft_raw(st.session_state.active_draft_id)

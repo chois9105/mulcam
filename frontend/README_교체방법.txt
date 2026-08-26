@@ -50,24 +50,30 @@ GET /api/drafts/{draft_id}
 상태 확인
 GET /api/status
 
-## 4. Request Body 자동 대응
+## 4. Request Body 계약
 
-현재 실행 환경에서는 원격 Swagger의 실제 Request Body 스키마를 직접 확정할 수 없으므로,
-프로그램은 실행 시 다음 URL을 자동으로 읽습니다.
-
-https://mulcam.1435.co.kr/openapi.json
-
-FastAPI OpenAPI 스키마를 읽어 실제 필드명과
-뉴스레터 요청 / 수정 요청 / 주기 값을 자동으로 매핑합니다.
-
-OpenAPI를 읽지 못하면 다음 관례적 필드명으로 fallback합니다.
+Frontend와 Backend가 같은 저장소에서 함께 관리되므로 요청 본문은 아래 필드로 고정합니다.
 
 - newsletter request: request_text
-- revise: feedback
-- approve: frequency
+- revise: direction
+- approve: frequency, approved_template
 
-백엔드가 전혀 다른 필수 필드를 요구하면 Streamlit 화면의
-"서버 응답 상세"에 FastAPI 422 오류 내용이 표시됩니다.
+승인 주기 값:
+- every_30_minutes: 30분마다
+- hourly: 매시간
+- daily: 매일
+- weekly: 매주
+
+n8n 발송 연동용 Backend API:
+- GET /api/dispatches/pending
+  정기 생성됐지만 발송 완료되지 않은 목록을 조회합니다.
+- POST /api/dispatches/{draft_id}/result
+  외부 메일 API 호출 후 {"sent": true} 또는
+  {"sent": false, "error": "실패 사유"}로 결과를 기록합니다.
+
+Backend는 현재 승인 및 정기 생성 단계에서 실제 이메일을 직접 발송하지 않습니다.
+
+Swagger 문서는 연결 상태 확인과 개발 참고용으로 사용합니다.
 
 ## 5. 설치
 

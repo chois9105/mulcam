@@ -40,6 +40,15 @@ class FakeService:
     def schedules(self):
         return []
 
+    def pending_dispatches(self):
+        return [{**self.draft, "id": "draft_dispatch",
+                 "status": "approved", "schedule_parent_code": "draft_1"}]
+
+    def record_dispatch_result(self, draft_id, sent, error):
+        self.calls.append(("dispatch_result", draft_id, sent, error))
+        return {**self.draft, "id": draft_id,
+                "status": "sent" if sent else "approved"}
+
     def storage_mode(self):
         return {"mode": "memory", "persistent": False}
 
@@ -73,14 +82,21 @@ def test_primary_newsletter_endpoints_are_connected(monkeypatch):
     detail = client.get("/api/drafts/draft_1")
     status = client.get("/api/status")
     collected = client.post("/api/news/collect?limit_per_feed=3")
+    pending_dispatches = client.get("/api/dispatches/pending")
+    dispatch_result = client.post("/api/dispatches/draft_dispatch/result", json={
+        "sent": True
+    })
 
     assert [r.status_code for r in
-            (created, revised, approved, listed, detail, status, collected)] == [200] * 7
+            (created, revised, approved, listed, detail, status, collected,
+             pending_dispatches, dispatch_result)] == [200] * 9
     assert ("create", "생성형 AI") in service.calls
     assert ("revise", "draft_1", "더 간결하게") in service.calls
     assert ("approve", "draft_1", "weekly", "<article>승인본</article>") in service.calls
     assert approved.json()["status"] == "approved"
     assert collected.json()["collected"] == 3
+    assert pending_dispatches.json()["count"] == 1
+    assert ("dispatch_result", "draft_dispatch", True, None) in service.calls
 
 
 def test_graph_endpoints_are_connected_without_explicit_thread_id(monkeypatch):

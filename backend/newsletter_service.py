@@ -13,7 +13,6 @@ API 층(api_v1.py)은 요청을 받고 이 서비스를 부르기만 한다.
 
 from __future__ import annotations
 
-import calendar
 import logging
 import os
 import re
@@ -29,7 +28,6 @@ from polisher import Polisher
 import compose
 import live_search
 import store
-from mailer import send_draft
 from rag_engine import DEFAULT_STYLE, STYLE_PROMPTS, NewsRAG
 from request_analyzer import RequestAnalyzer
 from reviewer import NewsletterReviewer
@@ -44,11 +42,10 @@ DEFAULT_USER_EMAIL = (
 
 # 주기 표시 문구
 FREQUENCY_LABEL = {
-    "once": "한 번만",
+    "every_30_minutes": "30분마다",
+    "hourly": "매시간",
     "daily": "매일",
     "weekly": "매주",
-    "biweekly": "격주",
-    "monthly": "매월",
 }
 
 # 수정 요청용 프롬프트
@@ -271,20 +268,10 @@ class NewsletterService:
             approved_template=draft["approved_template"],
             next_run_at=next_run_at,
         )
-        draft["schedule_id"] = draft_id if frequency != "once" else None
+        draft["schedule_id"] = draft_id
         draft["next_run_at"] = (
             next_run_at.strftime("%Y.%m.%d %H:%M") if next_run_at else None
         )
-
-        # 승인했으니 바로 한 통 보낸다.
-        # MAIL_DRY_RUN=true 면 실제로 나가지 않고 보낼 내용만 알려준다.
-        result = send_draft(draft, to=DEFAULT_USER_EMAIL)
-        draft["send_result"] = result
-        if result.get("sent"):
-            draft["status"] = "sent"
-            store.mark_sent(draft_id)
-        elif not result.get("dry_run"):
-            store.mark_sent(draft_id, error=result.get("reason"))
 
         return draft
 
@@ -293,6 +280,35 @@ class NewsletterService:
 
     def due_schedules(self, now: datetime | None = None) -> List[Dict]:
         return store.list_schedules(due_at=now or datetime.now())
+
+    def pending_dispatches(self) -> List[Dict]:
+        return store.list_pending_dispatches()
+
+    def prepare_dispatch(self, schedule: Dict) -> Dict:
+        """승인된 요청으로 최신 뉴스를 만들고 n8n 발송 대기에 등록한다."""
+        draft = self.create(schedule["request_text"])
+        html = draft.get("article_html", "")
+        store.mark_dispatch_pending(
+            draft["id"],
+            schedule_parent_code=schedule["draft_id"],
+            user_email=schedule.get("user_email") or DEFAULT_USER_EMAIL,
+            approved_template=html,
+        )
+        draft.update({
+            "status": "approved",
+            "user_email": schedule.get("user_email") or DEFAULT_USER_EMAIL,
+            "approved_template": html,
+            "schedule_parent_code": schedule["draft_id"],
+        })
+        return draft
+
+    def record_dispatch_result(self, draft_id: str, *, sent: bool,
+                               error: str | None = None) -> Dict:
+        draft = store.get_draft(draft_id)
+        if not draft or not draft.get("schedule_parent_code"):
+            raise ValueError("발송 대기 뉴스레터를 찾을 수 없습니다.")
+        store.mark_sent(draft_id, error=None if sent else (error or "발송 실패"))
+        return store.get_draft(draft_id)
 
     def mark_schedule_run(self, draft_id: str, frequency: str,
                           now: datetime | None = None) -> None:
@@ -369,15 +385,13 @@ class NewsletterService:
     def _next_run(now: datetime, frequency: str) -> datetime | None:
         from datetime import timedelta
 
-        days = {"daily": 1, "weekly": 7, "biweekly": 14}
-        if frequency in days:
-            return now + timedelta(days=days[frequency])
-        if frequency == "monthly":
-            year = now.year + (1 if now.month == 12 else 0)
-            month = 1 if now.month == 12 else now.month + 1
-            day = min(now.day, calendar.monthrange(year, month)[1])
-            return now.replace(year=year, month=month, day=day)
-        return None
+        intervals = {
+            "every_30_minutes": timedelta(minutes=30),
+            "hourly": timedelta(hours=1),
+            "daily": timedelta(days=1),
+            "weekly": timedelta(days=7),
+        }
+        return now + intervals[frequency] if frequency in intervals else None
 
     # ---------- 저장 ----------
     def _save(self, *, markdown, sources, review, audit, request_text,
@@ -385,7 +399,7 @@ class NewsletterService:
               revision_count=0, direction=None, research_items=None) -> Dict:
         now = datetime.now()
         if draft_id is None:
-            draft_id = f"draft_{now:%Y%m%d_%H%M%S}"
+            draft_id = f"draft_{now:%Y%m%d_%H%M%S_%f}"
 
         article_count = plan.article_count if plan else len(sources)
 

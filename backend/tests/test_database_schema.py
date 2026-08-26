@@ -11,6 +11,7 @@ def test_missing_draft_columns_detects_all_new_orm_fields():
 
     assert missing == [
         "research_items", "user_email", "approved_template",
+        "schedule_parent_code",
         "next_run_at", "last_scheduled_at",
     ]
 

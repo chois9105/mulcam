@@ -25,7 +25,7 @@ from newsletter_service import FREQUENCY_LABEL, service
 router = APIRouter(prefix="/api", tags=["화면 연동"])
 logger = logging.getLogger(__name__)
 
-Frequency = Literal["once", "daily", "weekly", "biweekly", "monthly"]
+Frequency = Literal["every_30_minutes", "hourly", "daily", "weekly"]
 DraftStatus = Literal["all", "pending", "approved", "rejected", "sent"]
 
 
@@ -54,7 +54,7 @@ class ReviseRequest(BaseModel):
 
 class ApproveRequest(BaseModel):
     """③ 최종 승인 — 주기를 함께 받는다"""
-    frequency: Frequency = Field("daily", description="발송 주기")
+    frequency: Frequency = Field("daily", description="자동 생성 주기")
     approved_template: Optional[str] = Field(
         default=None,
         description="사용자가 승인한 최종 HTML. 비우면 현재 초안의 HTML을 저장한다.",
@@ -116,8 +116,8 @@ async def revise_newsletter(draft_id: str, req: ReviseRequest):
 async def approve_newsletter(draft_id: str, req: ApproveRequest):
     """
     승인하고 발송 주기를 저장한다.
-    주기가 `once` 가 아니면, 이후 그 주기마다 같은 요청으로 뉴스를 새로 모아
-    요약본을 만들어 승인 대기에 올린다.
+    이후 그 주기마다 같은 요청으로 뉴스를 새로 모아 n8n 발송 대기에 올린다.
+    승인 API 자체에서는 메일을 보내지 않는다.
     """
     try:
         draft = service.get(draft_id)
@@ -163,6 +163,37 @@ async def get_draft(draft_id: str):
     except Exception as e:
         logger.exception("뉴스레터 상세 조회 실패: %s", draft_id)
         raise HTTPException(500, "요약본을 불러오지 못했습니다.") from e
+
+
+class DispatchResultRequest(BaseModel):
+    sent: bool = Field(..., description="외부 메일 API 발송 성공 여부")
+    error: Optional[str] = Field(None, max_length=500, description="실패 사유")
+
+
+@router.get("/dispatches/pending", summary="n8n용 미발송 뉴스레터 목록")
+async def list_pending_dispatches():
+    """정기 생성됐고 아직 발송 완료 기록이 없는 건만 돌려준다."""
+    try:
+        items = [service.to_response(d) for d in service.pending_dispatches()]
+        return {"count": len(items), "dispatches": items}
+    except Exception as e:
+        logger.exception("미발송 목록 조회 실패")
+        raise HTTPException(500, "미발송 목록을 불러오지 못했습니다.") from e
+
+
+@router.post("/dispatches/{draft_id}/result", summary="n8n 발송 결과 기록")
+async def record_dispatch_result(draft_id: str, req: DispatchResultRequest):
+    """메일 API 호출 뒤 n8n이 성공/실패를 기록한다. 이 API는 메일을 보내지 않는다."""
+    try:
+        draft = service.record_dispatch_result(
+            draft_id, sent=req.sent, error=req.error
+        )
+        return service.to_response(draft)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        logger.exception("발송 결과 기록 실패: %s", draft_id)
+        raise HTTPException(500, "발송 결과를 기록하지 못했습니다.") from e
 
 
 # ------------------------------------------------------------------

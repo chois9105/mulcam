@@ -27,7 +27,7 @@ GET /api/status
 - 이 파일은 agent_graph.py를 import하지 않습니다.
 - 로컬 LangGraph/Agent를 실행하지 않습니다.
 - /docs는 Swagger 문서 URL이며 API 호출 Base URL은 https://mulcam.1435.co.kr 입니다.
-- 실행 시 /openapi.json을 읽어 실제 Request Body 필드명을 가능한 범위에서 자동 매핑합니다.
+- 요청 본문은 같은 저장소의 Backend API 계약에 맞춰 고정합니다.
 """
 
 import os
@@ -37,6 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import streamlit as st
+
+from api_contract import approval_body, newsletter_request_body, revision_body
 
 
 # ============================================================
@@ -50,7 +52,8 @@ BACKEND_BASE_URL = os.getenv(
 DOCS_URL = f"{BACKEND_BASE_URL}/docs"
 OPENAPI_URL = f"{BACKEND_BASE_URL}/openapi.json"
 
-REQUEST_TIMEOUT = (6, 60)
+REQUEST_TIMEOUT = (6, 180)
+FREQUENCY_OPTIONS = ["every_30_minutes", "hourly", "daily", "weekly"]
 
 
 # ============================================================
@@ -297,7 +300,7 @@ ALIASES = {
         "요청", "뉴스레터요청",
     ],
     "feedback": [
-        "feedback", "change_request", "revision_request", "revision",
+        "direction", "feedback", "change_request", "revision_request", "revision",
         "revise", "request_text", "request", "reason", "instruction",
         "content", "text", "수정요청", "피드백",
     ],
@@ -307,6 +310,9 @@ ALIASES = {
     ],
     "approved": [
         "approved", "approve", "is_approved", "approval", "승인",
+    ],
+    "approved_template": [
+        "approved_template", "template", "article_html", "승인템플릿",
     ],
 }
 
@@ -397,6 +403,7 @@ def build_json_body(
     feedback: Optional[str] = None,
     frequency: Optional[str] = None,
     approved: Optional[bool] = None,
+    approved_template: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     OpenAPI 스키마에 맞춰 JSON Body를 만든다.
@@ -410,9 +417,12 @@ def build_json_body(
         if path == "/api/newsletter/request":
             return {"request_text": request_text or ""}
         if path.endswith("/revise"):
-            return {"feedback": feedback or ""}
+            return {"direction": feedback or ""}
         if path.endswith("/approve"):
-            return {"frequency": frequency or "daily"}
+            return {
+                "frequency": frequency or "daily",
+                "approved_template": approved_template,
+            }
         return {}
 
     # Request Body 자체가 없는 API
@@ -427,9 +437,12 @@ def build_json_body(
         if path == "/api/newsletter/request":
             return {"request_text": request_text or ""}
         if path.endswith("/revise"):
-            return {"feedback": feedback or ""}
+            return {"direction": feedback or ""}
         if path.endswith("/approve"):
-            return {"frequency": frequency or "daily"}
+            return {
+                "frequency": frequency or "daily",
+                "approved_template": approved_template,
+            }
         return {}
 
     body: Dict[str, Any] = {}
@@ -439,6 +452,7 @@ def build_json_body(
         "feedback": feedback,
         "frequency": frequency,
         "approved": approved,
+        "approved_template": approved_template,
     }
 
     for logical_name, value in logical_values.items():
@@ -482,30 +496,20 @@ def get_draft_raw(draft_id: str) -> Any:
 
 def request_newsletter(request_text: str) -> Any:
     path = "/api/newsletter/request"
-    body = build_json_body(path, request_text=request_text)
+    body = newsletter_request_body(request_text)
     return api_request("POST", path, json_body=body)
 
 
 def revise_draft(draft_id: str, change_request: str) -> Any:
     concrete_path = f"/api/drafts/{draft_id}/revise"
-    schema_path = "/api/drafts/{draft_id}/revise"
-
-    body = build_json_body(
-        schema_path,
-        feedback=change_request,
-    )
+    body = revision_body(change_request)
     return api_request("POST", concrete_path, json_body=body)
 
 
-def approve_draft(draft_id: str, frequency: str) -> Any:
+def approve_draft(draft_id: str, frequency: str,
+                  approved_template: Optional[str]) -> Any:
     concrete_path = f"/api/drafts/{draft_id}/approve"
-    schema_path = "/api/drafts/{draft_id}/approve"
-
-    body = build_json_body(
-        schema_path,
-        frequency=frequency,
-        approved=True,
-    )
+    body = approval_body(frequency, approved_template)
     return api_request("POST", concrete_path, json_body=body)
 
 
@@ -629,10 +633,10 @@ def safe_text(value: Any) -> str:
 
 def frequency_label(value: str) -> str:
     return {
+        "every_30_minutes": "30분마다",
+        "hourly": "매시간",
         "daily": "매일",
-        "weekly": "주간",
-        "biweekly": "격주",
-        "monthly": "월간",
+        "weekly": "매주",
     }.get(value, value)
 
 
@@ -640,6 +644,7 @@ def status_label(value: str) -> str:
     return {
         "pending": "승인 대기",
         "approved": "승인 완료",
+        "sent": "발송 완료",
         "revision": "수정 중",
         "revising": "수정 중",
     }.get(value, value or "-")
@@ -724,173 +729,153 @@ else:
 
 
 # ============================================================
-# 10. 상단 Compact 입력영역
+# 10. ① 주제 입력
 # ============================================================
-input1_col, input2_col = st.columns([1, 1], gap="medium")
+with st.container(border=True):
+    st.markdown(
+        '<div class="section-label">① 뉴스레터 주제 입력</div>',
+        unsafe_allow_html=True,
+    )
+    newsletter_request = st.text_area(
+        "원하는 뉴스레터 주제와 관점을 입력하세요.",
+        placeholder=(
+            "예: 생성형 AI와 LangGraph의 이번 주 주요 뉴스를 "
+            "실무자 관점에서 5개 정도 정리해 주세요."
+        ),
+        key="newsletter_request_input",
+    )
+    if st.button("🚀 뉴스레터 생성", type="primary", use_container_width=True):
+        if not newsletter_request.strip():
+            st.warning("뉴스레터 주제를 입력해 주세요.")
+        else:
+            try:
+                with st.spinner("검색·리서치·뉴스레터 생성·검수를 진행하고 있습니다..."):
+                    result = request_newsletter(newsletter_request.strip())
+                new_id = extract_draft_id(result)
+                if new_id:
+                    st.session_state.active_draft_id = new_id
+                st.success("뉴스레터가 생성되었습니다. 아래에서 검수해 주세요.")
+                st.rerun()
+            except BackendAPIError as exc:
+                show_api_error(exc)
 
 
-# ------------------------------------------------------------
-# 입력 ① 뉴스레터 요청
-# POST /api/newsletter/request
-# ------------------------------------------------------------
-with input1_col:
-    with st.container(border=True):
-        st.markdown(
-            '<div class="section-label">① 뉴스레터 요청</div>',
-            unsafe_allow_html=True,
-        )
+# ============================================================
+# 11. ② 결과 검수 → ③ 수정 또는 승인
+# ============================================================
+if drafts:
+    st.markdown("---")
 
-        newsletter_request = st.text_area(
-            "원하는 뉴스레터 내용을 입력하세요.",
-            placeholder=(
-                "예: 생성형 AI와 LangGraph의 이번 주 주요 뉴스를 "
-                "실무자 관점에서 5개 정도 정리해 주세요."
-            ),
-            key="newsletter_request_input",
-        )
+    title_map = {d["id"]: d["title"] for d in drafts}
+    active_index = draft_ids.index(st.session_state.active_draft_id)
+    target_id = st.selectbox(
+        "검수할 뉴스레터",
+        draft_ids,
+        index=active_index,
+        format_func=lambda draft_id: title_map.get(draft_id, draft_id),
+    )
+    st.session_state.active_draft_id = target_id
 
-        if st.button(
-            "🚀 뉴스레터 요청",
-            type="primary",
-            use_container_width=True,
-        ):
-            if not newsletter_request.strip():
-                st.warning("뉴스레터 요청 내용을 입력해 주세요.")
-            else:
-                try:
-                    with st.spinner("백엔드에 뉴스레터 생성을 요청하고 있습니다..."):
-                        result = request_newsletter(newsletter_request.strip())
+    try:
+        active_detail = get_draft_raw(st.session_state.active_draft_id)
+    except BackendAPIError as exc:
+        active_detail = {}
+        show_api_error(exc)
 
-                    new_id = extract_draft_id(result)
-                    if new_id:
-                        st.session_state.active_draft_id = new_id
+    if isinstance(active_detail, dict) and active_detail:
+        st.markdown("### ② 생성 결과 검수")
+        with st.container(border=True):
+            article_html = first_value(active_detail, ["article_html"], "")
+            markdown_text = first_value(active_detail, ["markdown"], "")
+            if article_html:
+                st.markdown(article_html, unsafe_allow_html=True)
+            elif markdown_text:
+                st.markdown(markdown_text)
 
-                    st.session_state.last_api_message = "뉴스레터 요청이 백엔드에 전달되었습니다."
-                    st.success(st.session_state.last_api_message)
-                    st.rerun()
+            audit = active_detail.get("audit_report") or {}
+            if audit:
+                a1, a2, a3 = st.columns(3)
+                a1.metric("가독성", audit.get("readability", "-"))
+                a2.metric("사실 정확도", audit.get("fact_accuracy", "-"))
+                a3.metric("일관성", audit.get("coherence", "-"))
+                if audit.get("reviewer_comment"):
+                    st.caption(f"검수 의견: {audit['reviewer_comment']}")
 
-                except BackendAPIError as exc:
-                    show_api_error(exc)
+            sources = active_detail.get("sources") or []
+            if sources:
+                with st.expander(f"근거 기사 {len(sources)}건"):
+                    for index, source in enumerate(sources, 1):
+                        title = source.get("title", f"기사 {index}")
+                        url = source.get("url", "")
+                        media = source.get("summary") or source.get("domain", "")
+                        if url:
+                            st.markdown(f"{index}. [{title}]({url}) · {media}")
+                        else:
+                            st.markdown(f"{index}. {title} · {media}")
 
-
-# ------------------------------------------------------------
-# 입력 ② 수정 요청 / 최종 승인 + 주기
-# POST /api/drafts/{draft_id}/revise
-# POST /api/drafts/{draft_id}/approve
-# ------------------------------------------------------------
-with input2_col:
-    with st.container(border=True):
-        st.markdown(
-            '<div class="section-label">② 수정 요청 / 최종 승인</div>',
-            unsafe_allow_html=True,
-        )
-
-        if drafts:
-            title_map = {d["id"]: d["title"] for d in drafts}
-            active_index = draft_ids.index(st.session_state.active_draft_id)
-
-            target_id = st.selectbox(
-                "수정/승인 대상 뉴스",
-                draft_ids,
-                index=active_index,
-                format_func=lambda draft_id: title_map.get(draft_id, draft_id),
-            )
-            st.session_state.active_draft_id = target_id
-
+        with st.container(border=True):
+            st.markdown("### ③ 수정 요청 또는 최종 승인")
             change_request = st.text_area(
-                "이렇게 바꾸어주세요",
+                "수정 요청사항",
                 placeholder=(
-                    "예: 너무 기술적인 표현은 줄이고, 핵심 뉴스 5개를 먼저 보여준 뒤 "
-                    "각 항목을 이해하기 쉽게 설명해 주세요."
+                    "예: 기술적인 표현을 줄이고 각 항목을 더 쉽게 설명해 주세요."
                 ),
                 key="change_request_combined",
             )
-
-            action1, action2, action3 = st.columns([1.0, 1.1, .9])
-
-            with action1:
-                revise_clicked = st.button(
-                    "↻ 수정 요청",
-                    use_container_width=True,
-                )
-
-            with action2:
-                approve_clicked = st.button(
-                    "✅ 최종 승인",
-                    type="primary",
-                    use_container_width=True,
-                )
-
-            with action3:
+            revise_col, frequency_col, approve_col = st.columns([1.1, 1, 1.1])
+            with revise_col:
+                revise_clicked = st.button("↻ 수정 요청", use_container_width=True)
+            with frequency_col:
                 selected_frequency = st.selectbox(
-                    "주기",
-                    ["daily", "weekly", "monthly"],
-                    index=["daily", "weekly", "monthly"].index(
-                        st.session_state.frequency
-                    ),
+                    "받을 주기",
+                    FREQUENCY_OPTIONS,
+                    index=FREQUENCY_OPTIONS.index(st.session_state.frequency),
                     format_func=frequency_label,
                     key="frequency_select",
                 )
                 st.session_state.frequency = selected_frequency
+            with approve_col:
+                approve_clicked = st.button(
+                    "✅ 이대로 승인", type="primary", use_container_width=True
+                )
 
             if revise_clicked:
                 if not change_request.strip():
-                    st.warning("'이렇게 바꾸어주세요'에 수정 내용을 입력해 주세요.")
+                    st.warning("수정 요청사항을 입력해 주세요.")
                 else:
                     try:
-                        with st.spinner("백엔드에 수정 요청을 전달하고 있습니다..."):
-                            revise_draft(
-                                st.session_state.active_draft_id,
-                                change_request.strip(),
-                            )
-                        st.success("수정 요청이 백엔드에 전달되었습니다.")
+                        with st.spinner("이전 결과를 바탕으로 다시 작성하고 있습니다..."):
+                            revise_draft(target_id, change_request.strip())
+                        st.success("수정된 뉴스레터가 생성되었습니다.")
                         st.rerun()
-
                     except BackendAPIError as exc:
                         show_api_error(exc)
 
             if approve_clicked:
                 try:
-                    with st.spinner("최종 승인과 주기 설정을 백엔드에 전달하고 있습니다..."):
+                    approved_template = first_value(
+                        active_detail,
+                        ["approved_template", "article_html"],
+                        None,
+                    )
+                    with st.spinner("승인 내용과 주기를 저장하고 있습니다..."):
                         approve_draft(
-                            st.session_state.active_draft_id,
+                            target_id,
                             st.session_state.frequency,
+                            approved_template,
                         )
                     st.success(
-                        f"최종 승인되었습니다. 주기: "
+                        "최종 승인되었습니다. 주기: "
                         f"{frequency_label(st.session_state.frequency)}"
                     )
                     st.rerun()
-
                 except BackendAPIError as exc:
                     show_api_error(exc)
 
-        else:
-            st.info(
-                "백엔드에 조회 가능한 초안이 없습니다. "
-                "먼저 왼쪽에서 뉴스레터를 요청해 주세요."
-            )
+    st.markdown("### 뉴스레터 목록")
 
-            # 초안이 없어도 주기 UI 위치를 유지
-            _, _, period_col = st.columns([1.0, 1.1, .9])
-            with period_col:
-                selected_frequency = st.selectbox(
-                    "주기",
-                    ["daily", "weekly", "monthly"],
-                    index=["daily", "weekly", "monthly"].index(
-                        st.session_state.frequency
-                    ),
-                    format_func=frequency_label,
-                    key="frequency_select_empty",
-                )
-                st.session_state.frequency = selected_frequency
-
-
-# ============================================================
-# 11. 화면 출력 - Backend가 만든 뉴스 헤드 목록
-# ============================================================
-if drafts:
-    st.markdown("---")
+else:
+    st.info("주제를 입력해 첫 뉴스레터를 생성해 주세요.")
 
     # compact하게 최근/조회된 헤드만 표시
     for draft in drafts[:8]:
@@ -955,9 +940,9 @@ GET /api/status
 
     spec = get_openapi_spec()
     if spec:
-        st.success("OpenAPI 스키마를 읽어 Request Body 필드명을 자동 인식 중입니다.")
+        st.success("Backend OpenAPI 문서에 연결되어 있습니다.")
     else:
         st.warning(
-            "OpenAPI 스키마를 읽지 못했습니다. "
-            "request_text / feedback / frequency 필드명으로 fallback합니다."
+            "OpenAPI 문서를 읽지 못했습니다. "
+            "API 요청은 고정된 request_text / direction / frequency 계약으로 계속 동작합니다."
         )

@@ -112,13 +112,40 @@ def test_approve_persists_fixed_user_template_and_frequency(monkeypatch):
     monkeypatch.setattr(ns.store, "mark_approved",
                         lambda draft_id, frequency, **kwargs: persisted.update(
                             draft_id=draft_id, frequency=frequency, **kwargs))
-    monkeypatch.setattr(ns.store, "mark_sent", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ns, "send_draft", lambda draft, to: {"dry_run": True, "to": [to]})
+    approved = service.approve(
+        "draft_1", "every_30_minutes", "<article>승인본</article>"
+    )
 
-    approved = service.approve("draft_1", "weekly", "<article>승인본</article>")
-
-    assert persisted["frequency"] == "weekly"
+    assert persisted["frequency"] == "every_30_minutes"
     assert persisted["user_email"] == ns.DEFAULT_USER_EMAIL
     assert persisted["approved_template"] == "<article>승인본</article>"
     assert persisted["next_run_at"] > datetime.now()
     assert approved["user_email"] == ns.DEFAULT_USER_EMAIL
+    assert "send_result" not in approved
+
+
+def test_prepare_dispatch_registers_generated_newsletter_without_sending(monkeypatch):
+    service = ns.NewsletterService()
+    generated = {
+        "id": "draft_child", "status": "pending",
+        "article_html": "<article>새 뉴스</article>",
+    }
+    persisted = {}
+    monkeypatch.setattr(service, "create", lambda request_text: generated.copy())
+    monkeypatch.setattr(ns.store, "mark_dispatch_pending",
+                        lambda draft_id, **kwargs: persisted.update(
+                            draft_id=draft_id, **kwargs))
+
+    result = service.prepare_dispatch({
+        "draft_id": "draft_parent", "request_text": "AI 뉴스",
+        "user_email": "contact@1435.co.kr",
+    })
+
+    assert result["status"] == "approved"
+    assert result["schedule_parent_code"] == "draft_parent"
+    assert persisted == {
+        "draft_id": "draft_child",
+        "schedule_parent_code": "draft_parent",
+        "user_email": "contact@1435.co.kr",
+        "approved_template": "<article>새 뉴스</article>",
+    }

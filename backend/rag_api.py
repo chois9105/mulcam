@@ -61,7 +61,7 @@ class DraftRequest(BaseModel):
     topic: str = Field(..., description="주제 또는 키워드", examples=["AI 반도체"])
     style: Literal["brief", "newsletter", "deep"] = Field("newsletter")
     keywords: List[str] = Field(default_factory=list, description="태그로 붙일 키워드")
-    frequency: Literal["daily", "weekly", "biweekly", "monthly"] = Field("daily")
+    frequency: Literal["every_30_minutes", "hourly", "daily", "weekly"] = Field("daily")
     review: bool = Field(True, description="검수 에이전트를 돌릴지 (끄면 빠르지만 점수 없음)")
 
 

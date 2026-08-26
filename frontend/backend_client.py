@@ -11,7 +11,7 @@
 부르는 엔드포인트는 세 개뿐이다.
     ① POST /api/newsletter/request     { request_text }
     ② POST /api/drafts/{id}/revise     { direction }
-    ③ POST /api/drafts/{id}/approve    { frequency }
+    ③ POST /api/drafts/{id}/approve    { frequency, approved_template }
 """
 
 from __future__ import annotations
@@ -21,7 +21,12 @@ from typing import Dict, List, Optional
 
 import requests
 
-BASE = os.getenv("BACKEND_URL", "http://127.0.0.1:8001").rstrip("/")
+from api_contract import approval_body, newsletter_request_body, revision_body
+
+BASE = os.getenv(
+    "NEWSLETTER_BACKEND_URL",
+    os.getenv("BACKEND_URL", "https://mulcam.1435.co.kr"),
+).rstrip("/")
 
 # 생성은 뉴스 검색·요약·검수를 거쳐 10~20초 걸린다
 TIMEOUT_LONG = 180
@@ -95,17 +100,21 @@ def _to_ui(d: Dict) -> Dict:
 # ------------------------------------------------------------------
 def create(request_text: str) -> Dict:
     """① 뉴스레터 요청"""
-    return _to_ui(_post("/api/newsletter/request", {"request_text": request_text}))
+    return _to_ui(_post("/api/newsletter/request", newsletter_request_body(request_text)))
 
 
 def revise(draft_id: str, direction: str) -> Dict:
     """② 수정 요청 — 화면의 '이렇게 바꾸어주세요' 한 칸"""
-    return _to_ui(_post(f"/api/drafts/{draft_id}/revise", {"direction": direction}))
+    return _to_ui(_post(f"/api/drafts/{draft_id}/revise", revision_body(direction)))
 
 
-def approve(draft_id: str, frequency: str = "daily") -> Dict:
+def approve(draft_id: str, frequency: str = "daily",
+            approved_template: Optional[str] = None) -> Dict:
     """③ 최종 승인 (+ 주기)"""
-    return _to_ui(_post(f"/api/drafts/{draft_id}/approve", {"frequency": frequency}))
+    return _to_ui(_post(
+        f"/api/drafts/{draft_id}/approve",
+        approval_body(frequency, approved_template),
+    ))
 
 
 # ------------------------------------------------------------------

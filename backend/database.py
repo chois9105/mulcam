@@ -40,6 +40,7 @@ DRAFT_COLUMN_MIGRATIONS: Dict[str, str] = {
     "research_items": "ADD COLUMN research_items JSON NULL",
     "user_email": "ADD COLUMN user_email VARCHAR(255) NULL",
     "approved_template": "ADD COLUMN approved_template MEDIUMTEXT NULL",
+    "schedule_parent_code": "ADD COLUMN schedule_parent_code VARCHAR(50) NULL",
     "next_run_at": "ADD COLUMN next_run_at DATETIME NULL",
     "last_scheduled_at": "ADD COLUMN last_scheduled_at DATETIME NULL",
 }

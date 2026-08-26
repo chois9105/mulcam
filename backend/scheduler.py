@@ -7,8 +7,8 @@
                      1~2분 걸리는 일이라 미리 해둔다.
                      그래야 사용자가 요청 버튼을 눌렀을 때 몇 초 만에 답이 나온다.
 
-    2. 정기 발송     승인할 때 주기를 정해둔 요약본을,
-                     그 주기마다 같은 요청으로 새로 만들어 승인 대기에 올린다.
+    2. 정기 생성     승인할 때 주기를 정해둔 요청을 30분마다 확인하고,
+                     도래한 건을 새로 만들어 n8n 발송 대기에 올린다.
 
 서버가 켜져 있는 동안만 돈다. FastAPI 안에서 함께 돈다.
 """
@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 
 # 뉴스 수집 시각 (기본: 매일 07:00, 12:00, 18:00)
 COLLECT_HOURS = os.getenv("COLLECT_HOURS", "7,12,18")
-# 정기 발송 시각 (기본: 08:30)
-DISPATCH_TIME = os.getenv("DISPATCH_TIME", "08:30")
-
 DAY_MAP = {"mon": "mon", "tue": "tue", "wed": "wed",
            "thu": "thu", "fri": "fri", "sat": "sat", "sun": "sun"}
 
@@ -85,14 +82,12 @@ def last_collect() -> Dict:
 
 
 # ------------------------------------------------------------------
-# 작업 2 — 정기 발송
+# 작업 2 — 정기 생성
 # ------------------------------------------------------------------
 def run_scheduled_dispatch() -> List[Dict]:
     """
-    주기가 걸린 요약본을 다시 만들어 승인 대기에 올린다.
-
-    사람 승인 없이 바로 보내지 않는다.
-    화면 흐름이 '만들고 -> 사람이 보고 -> 승인해야 나간다' 이기 때문이다.
+    도래한 승인 요청으로 최신 뉴스를 만들고 n8n 발송 대기에 올린다.
+    실제 이메일 발송은 하지 않는다.
     """
     from newsletter_service import service
 
@@ -102,13 +97,13 @@ def run_scheduled_dispatch() -> List[Dict]:
         if not sch.get("is_active"):
             continue
         try:
-            draft = service.create(sch["request_text"])
+            draft = service.prepare_dispatch(sch)
             service.mark_schedule_run(sch["draft_id"], sch["frequency"], now)
             results.append({
                 "schedule_id": sch["schedule_id"],
                 "new_draft_id": draft["id"],
                 "score": draft["score"],
-                "status": "승인 대기",
+                "status": "발송 대기",
             })
             logger.info("정기 생성 완료: %s", draft["id"])
         except Exception as e:
@@ -133,15 +128,14 @@ def start() -> BackgroundScheduler:
         id="collect_news", replace_existing=True,
     )
 
-    # 정기 발송
-    hh, mm = (DISPATCH_TIME.split(":") + ["0"])[:2]
+    # n8n 조회 주기와 같은 30분 간격으로 도래한 정기 건을 생성한다.
     _scheduler.add_job(
-        run_scheduled_dispatch, CronTrigger(hour=int(hh), minute=int(mm)),
+        run_scheduled_dispatch, CronTrigger(minute="*/30"),
         id="scheduled_dispatch", replace_existing=True,
     )
 
     _scheduler.start()
-    logger.info("스케줄러 시작 - 수집 %s시, 발송 %s", COLLECT_HOURS, DISPATCH_TIME)
+    logger.info("스케줄러 시작 - 수집 %s시, 정기 생성 30분 간격", COLLECT_HOURS)
     return _scheduler
 
 

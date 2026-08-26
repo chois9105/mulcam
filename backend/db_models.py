@@ -83,9 +83,10 @@ class Draft(Base):
     status = Column(String(20), default="pending")   # pending/approved/rejected/sent
     revision_count = Column(Integer, default=0)
     last_direction = Column(Text)                    # 마지막 수정 요청 문구
-    frequency = Column(String(20))                   # once/daily/weekly/biweekly/monthly
+    frequency = Column(String(20))                   # every_30_minutes/hourly/daily/weekly
     user_email = Column(String(255))                  # 로그인 없는 단일 사용자 식별자
     approved_template = Column(MEDIUMTEXT)            # 사용자가 승인한 최종 HTML 템플릿
+    schedule_parent_code = Column(String(50))         # 정기 생성본이 참조하는 승인 원본
     created_at = Column(DateTime, default=datetime.now)
     approved_at = Column(DateTime)
     next_run_at = Column(DateTime)                    # 다음 실시간 수집 요청 시각

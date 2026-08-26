@@ -110,6 +110,7 @@ def _to_row(draft: Dict) -> Dict:
         "frequency": draft.get("frequency"),
         "user_email": draft.get("user_email"),
         "approved_template": draft.get("approved_template"),
+        "schedule_parent_code": draft.get("schedule_parent_code"),
     }
 
 
@@ -129,10 +130,12 @@ def _from_row(row) -> Dict:
         "frequency_label": None,      # 서비스에서 다시 채운다
         "user_email": row.user_email,
         "approved_template": row.approved_template,
+        "schedule_parent_code": row.schedule_parent_code,
         "created_at": fmt(row.created_at),
         "approved_at": fmt(row.approved_at),
         "next_run_at": fmt(row.next_run_at),
         "sent_at": fmt(row.sent_at),
+        "send_error": row.send_error,
         "revision_count": row.revision_count,
         "article_html": row.article_html,
         "markdown": row.markdown,
@@ -227,13 +230,60 @@ def mark_approved(draft_code: str, frequency: str, *, user_email: str,
             row.next_run_at = next_run_at
 
 
+def mark_dispatch_pending(draft_code: str, *, schedule_parent_code: str,
+                          user_email: str, approved_template: str) -> None:
+    """정기 생성본을 n8n이 가져갈 미발송 상태로 등록한다."""
+    if _detect() == "memory":
+        d = _memory.get(draft_code)
+        if d:
+            d["status"] = "approved"
+            d["user_email"] = user_email
+            d["approved_template"] = approved_template
+            d["schedule_parent_code"] = schedule_parent_code
+            d["approved_at"] = datetime.now().strftime("%Y.%m.%d %H:%M")
+        return
+
+    from database import session_scope
+    from db_models import Draft
+    with session_scope() as s:
+        row = s.query(Draft).filter_by(draft_code=draft_code).first()
+        if row:
+            row.status = "approved"
+            row.user_email = user_email
+            row.approved_template = approved_template
+            row.schedule_parent_code = schedule_parent_code
+            row.approved_at = datetime.now()
+
+
+def list_pending_dispatches() -> List[Dict]:
+    """정기 생성됐지만 아직 발송 완료되지 않은 뉴스레터를 조회한다."""
+    if _detect() == "memory":
+        items = [
+            d for d in _memory.values()
+            if d.get("schedule_parent_code")
+            and d.get("status") == "approved"
+            and not d.get("sent_at")
+        ]
+        return sorted(items, key=lambda d: d["id"])
+
+    from database import session_scope
+    from db_models import Draft
+    with session_scope() as s:
+        rows = s.query(Draft).filter(
+            Draft.schedule_parent_code.isnot(None),
+            Draft.status == "approved",
+            Draft.sent_at.is_(None),
+        ).order_by(Draft.created_at.asc()).all()
+        return [_from_row(r) for r in rows]
+
+
 def list_schedules(due_at: datetime | None = None) -> List[Dict]:
     """DB에 저장된 반복 승인 건을 스케줄러가 쓰는 형태로 돌려준다."""
     if _detect() == "memory":
         rows = []
         for d in _memory.values():
             next_run = d.get("_next_run_at")
-            if not d.get("approved_at") or d.get("frequency") in (None, "once"):
+            if not d.get("approved_at") or not d.get("frequency"):
                 continue
             if due_at is not None and (next_run is None or next_run > due_at):
                 continue
@@ -255,7 +305,6 @@ def list_schedules(due_at: datetime | None = None) -> List[Dict]:
         q = s.query(Draft).filter(
             Draft.approved_at.isnot(None),
             Draft.frequency.isnot(None),
-            Draft.frequency != "once",
         )
         if due_at is not None:
             q = q.filter(Draft.next_run_at.isnot(None), Draft.next_run_at <= due_at)
@@ -295,7 +344,9 @@ def mark_sent(draft_code: str, error: str = None) -> None:
         d = _memory.get(draft_code)
         if d:
             d["status"] = "sent" if not error else d["status"]
-            d["sent_at"] = datetime.now().strftime("%Y.%m.%d %H:%M")
+            d["sent_at"] = (
+                datetime.now().strftime("%Y.%m.%d %H:%M") if not error else None
+            )
             d["send_error"] = error
         return
 
@@ -306,7 +357,9 @@ def mark_sent(draft_code: str, error: str = None) -> None:
         if row:
             if not error:
                 row.status = "sent"
-            row.sent_at = datetime.now()
+                row.sent_at = datetime.now()
+            else:
+                row.sent_at = None
             row.send_error = error
 
 

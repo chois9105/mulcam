@@ -1,165 +1,127 @@
-# Newsletter Agent Backend
+# 뉴스레터 에이전트 (RSS + RAG)
 
-AI 기반 뉴스레터 자동 생성 및 배송 시스템
+국내 언론사 RSS를 모아 본문까지 가져온 뒤, RAG로 근거 있는 뉴스레터를 만든다.
 
-## 개요
-
-LangChain과 OpenAI를 활용하여 주어진 주제에 대한 뉴스레터를 자동으로 생성하고, 메일 서버를 통해 배송하는 백엔드 애플리케이션입니다.
-
-## 기능
-
-- **자동 뉴스레터 생성**: AI를 통한 고품질 뉴스레터 콘텐츠 생성
-- **메일 배송**: SMTP를 통한 대량 이메일 발송
-- **이메일 검증**: 유효한 이메일 주소 검증
-- **HTML 템플릿**: 전문적인 이메일 템플릿 제공
-- **배치 처리**: 대량 이메일 발송 시 배치 처리로 안정성 확보
-
-## 설치
-
-### 요구사항
-- Python 3.8+
-- pip
-
-### 설정
-
-1. 저장소 클론
-```bash
-git clone https://github.com/yourusername/mulcam.git
-cd mulcam/backend
+```
+RSS 수집 → 본문 크롤링 → 임베딩·색인(FAISS) → 검색 → LLM 답변/요약
 ```
 
-2. 의존성 설치
+## 왜 RAG인가
+
+LLM은 학습 시점 이후의 뉴스를 모른다. 오늘 수집한 기사를 검색해서 프롬프트에
+직접 넣어주면, 모델이 지어내지 않고 **실제 기사에 근거해** 답한다.
+모든 응답에는 근거 기사 번호 `[1]`과 원문 링크가 붙는다.
+
+## 검증 결과 (2026-08-25)
+
+| 항목 | 결과 |
+|---|---|
+| 등록 피드 | 16개 (연합·한겨레·경향·동아·조선·서울·매경·머니투데이·뉴시스·전자신문·ZDNet·노컷·오마이 등) |
+| 수집 | 152건 |
+| RSS가 주는 요약 | 평균 458자 — **요약 재료로 부족** |
+| 링크 따라가 본문 수집 | 155/156 성공 (99%), 평균 900자 |
+| 리서치·요약·환각방지 | 정상 |
+
+### 확인된 제약
+
+- **RSS는 본문 전체를 주지 않는다.** 연합뉴스는 63자 요약만 준다.
+  그래서 `article_fetcher.py`가 링크를 따라가 본문을 긁어온다.
+- **구글뉴스는 제외했다.** 링크가 `news.google.com/rss/articles/...` 리다이렉트라
+  상세 페이지로 바로 갈 수 없고 본문도 못 가져온다.
+- **네이버 RSS는 서비스 종료.** `rss.naver.com` 도메인 자체가 없다.
+- 조선일보·머니투데이 일부 기사는 봇 차단으로 본문 실패 → RSS 요약으로 대체된다.
+- 부고·인사·헤드라인 목록 기사는 수집 단계에서 걸러낸다 (`SKIP_TITLE`).
+
+## 요약 3종
+
+| style | 이름 | 형식 | 참고 기사 |
+|---|---|---|---|
+| `brief` | 짧은 브리핑 | 한 줄 + 핵심 3가지, 200자 이내 | 5건 |
+| `newsletter` | 표준 뉴스레터 | 이슈 3~5개 (소제목 + 설명) + 오늘의 한 줄 | 8건 |
+| `deep` | 심층 분석 | 무슨 일이 / 왜 중요한가 / 함께 볼 흐름 / 참고 기사 | 12건 |
+
+## API
+
+수집(느림)과 생성(빠름)을 분리했다. `/rag/build`를 하루 1~2회 돌려 색인을 만들고,
+그 뒤 `/rag/ask`·`/rag/summarize`를 여러 번 빠르게 호출한다.
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| POST | `/rag/build` | RSS 수집 → 본문 크롤링 → 색인 생성 (1~2분) |
+| GET | `/rag/status` | 색인 준비 상태·등록 피드 확인 |
+| GET | `/rag/news` | 수집된 원본 뉴스 JSON (링크 포함, 상세페이지 이동용) |
+| POST | `/rag/ask` | 리서치 — 질문에 기사 근거로 답변 |
+| POST | `/rag/summarize` | 요약 — style 로 3종 중 선택 |
+| POST | `/rag/draft` | 요약+검수 → 프론트 `NewsletterDraft` 형식 |
+| GET | `/rag/drafts` | 생성된 초안 목록 |
+| GET | `/rag/drafts/{id}` | 초안 상세 |
+| POST | `/rag/summarize/compare` | 3종을 한 번에 생성해 비교 |
+| GET | `/rag/styles` | 스타일 목록 |
+
+기존 엔드포인트(`/generate`, `/news/rss`, `/newsletter/from-rss`, `/validate-emails`)도 유지된다.
+
+## 실행
+
 ```bash
 pip install -r requirements.txt
+cp .env.example .env          # .env 에 OPENAI_API_KEY 입력
+python -m uvicorn main:app --reload --port 8001
 ```
 
-3. 환경 설정
-```bash
-cp .env.example .env
-# .env 파일에 필요한 값 입력
-```
+문서: http://127.0.0.1:8001/docs
 
-## 환경 변수
+> 백엔드는 **8001번**을 쓴다. 프론트엔드(`frontend/main.py`)가 8000번을 쓰기 때문이다.
+> 두 서버를 동시에 켜야 연동 테스트가 된다.
 
-| 변수 | 설명 | 예시 |
-|------|------|------|
-| `OPENAI_API_KEY` | OpenAI API 키 | sk-... |
-| `SMTP_SERVER` | SMTP 서버 주소 | smtp.gmail.com |
-| `SMTP_PORT` | SMTP 포트 | 587 |
-| `SENDER_EMAIL` | 발송자 이메일 | your@gmail.com |
-| `SENDER_PASSWORD` | 이메일 비밀번호 | app_password |
-| `PORT` | 애플리케이션 포트 | 8000 |
-
-## 사용
-
-### API 서버 실행
+### 사용 예
 
 ```bash
-python main.py
+# 1) 색인 생성 (처음 한 번)
+curl -X POST http://127.0.0.1:8001/rag/build \
+  -H "Content-Type: application/json" \
+  -d '{"limit_per_feed": 15, "fetch_full_text": true}'
+
+# 2) 리서치
+curl -X POST http://127.0.0.1:8001/rag/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "오늘 반도체 관련 소식은?", "k": 5}'
+
+# 3) 요약 (스타일 선택)
+curl -X POST http://127.0.0.1:8001/rag/summarize \
+  -H "Content-Type: application/json" \
+  -d '{"topic": "오늘의 IT 뉴스", "style": "deep"}'
 ```
 
-서버는 `http://localhost:8000`에서 실행됩니다.
+## 전체 검증
 
-### API 문서
-
-`http://localhost:8000/docs`에서 Swagger UI로 API 문서 확인 가능
-
-### 뉴스레터 생성 예시
-
-```python
-from newsletter_agent import NewsletterAgent
-
-agent = NewsletterAgent()
-newsletter = agent.run("최신 AI 트렌드")
-print(newsletter)
+```bash
+python test_rag.py
 ```
 
-### 이메일 발송 예시
+수집 건수, 본문 확보율, 리서치 답변, 요약 3종, 환각 방지까지 한 번에 확인한다.
 
-```python
-from email_utils import EmailService, EmailTemplate
+## 파일 구성
 
-email_service = EmailService()
-html_content = EmailTemplate.create_newsletter_html(
-    title="AI 뉴스레터",
-    content="<p>최신 AI 소식...</p>"
-)
+| 파일 | 역할 |
+|---|---|
+| `rss_collector.py` | RSS 수집, 중복 제거, 정형 기사 필터 |
+| `article_fetcher.py` | 링크를 따라가 기사 본문 추출 |
+| `rag_engine.py` | 임베딩·검색·답변·요약 3종 |
+| `html_render.py` | 마크다운 → HTML (대시보드 조각 / 이메일 문서) |
+| `reviewer.py` | 검수 에이전트 (사실성35/출처25/구성20/독자20) |
+| `adapters.py` | 프론트엔드 형식 변환 (`NewsletterDraft`) |
+| `rag_api.py` | RAG 엔드포인트 |
+| `main.py` | FastAPI 앱 (라우터 등록) |
+| `project_newsletter.py` | LLM 단독 뉴스레터 생성 (RAG 없음) |
+| `newsletter.py` | LangGraph 파이프라인 버전 |
+| `email_utils.py` | 이메일 발송 |
+| `test_rag.py` | 전체 검증 스크립트 |
 
-result = email_service.send_newsletter(
-    recipients=["user@example.com"],
-    subject="AI 뉴스레터",
-    newsletter_html=html_content
-)
-```
+## 환경변수
 
-## API 엔드포인트
-
-### POST `/generate`
-
-뉴스레터 생성 및 배송
-
-**요청**
-```json
-{
-  "topic": "최신 AI 트렌드",
-  "recipients": ["user@example.com"],
-  "send_email": true
-}
-```
-
-**응답**
-```json
-{
-  "success": true,
-  "topic": "최신 AI 트렌드",
-  "newsletter": "...",
-  "email_results": {
-    "success": 1,
-    "failed": 0,
-    "failed_recipients": []
-  },
-  "timestamp": "2024-01-01T12:00:00"
-}
-```
-
-### GET `/health`
-
-헬스 체크
-
-### POST `/validate-emails`
-
-이메일 주소 검증
-
-**요청**
-```json
-{
-  "emails": ["user@example.com", "invalid-email"]
-}
-```
-
-## 프로젝트 구조
-
-```
-backend/
-├── main.py              # FastAPI 메인 애플리케이션
-├── newsletter_agent.py  # 뉴스레터 생성 에이전트
-├── email_utils.py       # 이메일 서비스 및 템플릿
-├── requirements.txt     # 의존성 관리
-├── .env.example        # 환경 변수 예시
-└── README.md           # 이 파일
-```
-
-## 기술 스택
-
-- **Framework**: FastAPI
-- **AI**: LangChain + OpenAI
-- **Email**: Python SMTP
-- **Server**: Uvicorn
-
-## 라이선스
-
-MIT License
-
-## 기여
-
-풀 리퀘스트를 환영합니다!
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `OPENAI_API_KEY` | — | 필수 |
+| `OPENAI_MODEL` | `gpt-4o-mini` | 답변·요약 모델 |
+| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | 임베딩 모델 |
+| `RAG_INDEX_DIR` | `faiss_index` | 색인 저장 위치 |

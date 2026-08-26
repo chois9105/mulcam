@@ -1,11 +1,14 @@
 """뉴스레터 에이전트 메인 애플리케이션"""
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from newsletter_agent import NewsletterAgent
+from project_newsletter import NewsletterAgent
 from email_utils import EmailService, EmailTemplate
+from rss_collector import RSSCollector
+from html_render import to_email_html
 import logging
 from datetime import datetime
 import os
@@ -22,9 +25,81 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Newsletter Agent API",
-    description="AI 기반 뉴스레터 자동 생성 및 배송 API",
-    version="1.0.0"
+    description="RSS 수집 + RAG 기반 뉴스레터 자동 생성 및 배송 API",
+    version="1.1.0"
 )
+
+# ---------------------------------------------------------------
+# CORS 설정
+#
+# 프론트엔드(:8000)와 백엔드(:8001)가 서로 다른 포트에서 돈다.
+# 브라우저는 보안상 다른 주소로의 요청을 기본으로 막기 때문에
+# "이 주소들은 허용한다"고 미리 알려줘야 한다.
+# ---------------------------------------------------------------
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:8000,http://127.0.0.1:8000,"      # 프론트엔드 FastAPI
+        "http://localhost:8501,http://127.0.0.1:8501",      # Streamlit
+    ).split(",") if o.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 화면 연동 API — 버튼 3개 (/api/newsletter/request, /api/drafts/{id}/revise, /approve)
+from api_v1 import router as api_router
+app.include_router(api_router)
+
+# RAG 라우터 (개발·확인용: /rag/build, /rag/ask, /rag/summarize ...)
+from rag_api import router as rag_router
+app.include_router(rag_router)
+
+
+# ---------------------------------------------------------------
+# 화면 제공
+#
+# 같은 서버에서 화면까지 같이 준다. 그래야 브라우저가 다른 주소로
+# 요청하는 상황이 안 생겨서 CORS 문제도 없고, 서버 하나만 켜면 된다.
+#   http://127.0.0.1:8001/  ->  화면
+# ---------------------------------------------------------------
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.isdir(_STATIC):
+    app.mount("/static", StaticFiles(directory=_STATIC), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def _index():
+        return FileResponse(os.path.join(_STATIC, "index.html"))
+
+
+# ---------------------------------------------------------------
+# 서버가 뜨고 내려갈 때
+# ---------------------------------------------------------------
+import scheduler as _scheduler
+
+
+@app.on_event("startup")
+def _on_startup():
+    import store
+    m = store.mode()
+    logger.info("저장소: %s - %s", m["mode"], m["note"])
+    if os.getenv("SCHEDULER_ENABLED", "true").lower() != "false":
+        _scheduler.start()
+    else:
+        logger.info("스케줄러 꺼짐 (SCHEDULER_ENABLED=false)")
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    _scheduler.stop()
 
 
 # 요청 모델
@@ -51,16 +126,21 @@ class NewsletterResponse(BaseModel):
 
 
 # API 엔드포인트
-@app.get("/health")
+# 배포 환경(로드밸런서 등)이 /health 를 쓰는 경우가 있어 두 경로 다 받는다
+@app.get("/api/health")
+@app.get("/health", include_in_schema=False)
 async def health_check():
     """헬스 체크"""
     return {
         "status": "healthy",
+        "service": "newsletter-backend",
+        "port": int(os.getenv("PORT", 8001)),
+        "cors_allowed": ALLOWED_ORIGINS,
         "timestamp": datetime.now().isoformat()
     }
 
 
-@app.post("/generate", response_model=NewsletterResponse)
+@app.post("/api/generate", response_model=NewsletterResponse)
 async def generate_newsletter(request: NewsletterRequest):
     """뉴스레터 생성"""
     try:
@@ -84,10 +164,9 @@ async def generate_newsletter(request: NewsletterRequest):
 
             if valid_recipients:
                 # HTML 템플릿 생성
-                html_content = EmailTemplate.create_newsletter_html(
-                    title=request.topic,
-                    content=newsletter
-                )
+                # 뉴스레터는 마크다운이라 그대로 넣으면 '#', '**' 가 글자로 보인다.
+                # HTML 로 변환해서 넣는다.
+                html_content = to_email_html(request.topic, newsletter)
 
                 # 이메일 발송
                 email_results = email_service.send_newsletter(
@@ -113,7 +192,7 @@ async def generate_newsletter(request: NewsletterRequest):
         )
 
 
-@app.post("/validate-emails")
+@app.post("/api/validate-emails")
 async def validate_emails(emails: List[str]):
     """이메일 주소 검증"""
     email_service = EmailService()
@@ -131,10 +210,89 @@ async def validate_emails(emails: List[str]):
     return results
 
 
+@app.get("/api/news/rss")
+async def fetch_rss_news():
+    """RSS 피드에서 최신 뉴스 수집"""
+    try:
+        logger.info("RSS 뉴스 수집 시작")
+        collector = RSSCollector()
+        news = collector.fetch_all_news()
+
+        logger.info(f"수집된 뉴스: {len(news)}개")
+        return {
+            "success": True,
+            "count": len(news),
+            "news": news,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"RSS 수집 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"RSS 수집 중 오류: {str(e)}"
+        )
+
+
+@app.post("/api/newsletter/from-rss")
+async def generate_newsletter_from_rss(request: NewsletterRequest):
+    """RSS 뉴스를 기반으로 뉴스레터 생성"""
+    try:
+        logger.info("RSS 기반 뉴스레터 생성 시작")
+
+        # RSS 뉴스 수집
+        collector = RSSCollector()
+        rss_news = collector.fetch_all_news()
+
+        # 뉴스 요약
+        news_text = "\n".join([
+            f"제목: {n['title']}\n요약: {n['description']}"
+            for n in rss_news[:10]
+        ])
+
+        agent = NewsletterAgent()
+        newsletter = agent.run(f"{request.topic}\n\n최신 뉴스:\n{news_text}")
+
+        # 이메일 발송
+        email_results = None
+        if request.send_email and request.recipients:
+            email_service = EmailService()
+            valid_recipients = [
+                r for r in request.recipients
+                if email_service.validate_email(r)
+            ]
+
+            if valid_recipients:
+                # 뉴스레터는 마크다운이라 그대로 넣으면 '#', '**' 가 글자로 보인다.
+                # HTML 로 변환해서 넣는다.
+                html_content = to_email_html(request.topic, newsletter)
+                email_results = email_service.send_newsletter(
+                    recipients=valid_recipients,
+                    subject=f"뉴스레터: {request.topic}",
+                    newsletter_html=html_content
+                )
+                logger.info(f"이메일 발송 완료")
+
+        return NewsletterResponse(
+            success=True,
+            topic=request.topic,
+            newsletter=newsletter,
+            email_results=email_results,
+            timestamp=datetime.now().isoformat()
+        )
+
+    except Exception as e:
+        logger.error(f"RSS 기반 뉴스레터 생성 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"오류: {str(e)}"
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000))
+        # 프론트엔드가 8000 을 쓰므로 백엔드는 8001 을 기본으로 한다
+        port=int(os.getenv("PORT", 8001)),
     )

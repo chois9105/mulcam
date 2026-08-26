@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 뉴스레터 에이전트 생성물 (실행하면 다시 만들어짐)
+backend/faiss_index/
+backend/*_cache.json
+backend/news_cache.json
+backend/rss_sample.json

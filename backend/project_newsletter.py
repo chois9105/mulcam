@@ -1,6 +1,5 @@
 """Newsletter Agent - 뉴스레터 자동 생성 에이전트"""
 
-from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 import os

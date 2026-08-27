@@ -177,13 +177,36 @@ def test_dispatch_response_contains_n8n_mail_payload():
     response = ns.NewsletterService.to_dispatch_response({
         "id": "draft_1", "title": "AI 뉴스", "status": "approved",
         "user_email": "contact@1435.co.kr", "frequency": "daily",
+        "_request_text": "생성형 AI 뉴스를 정리해 주세요.",
         "approved_template": "<article>승인 HTML</article>",
         "article_html": "<article>화면 HTML</article>",
         "markdown": "승인 본문",
     })
 
-    assert response["dispatch_type"] == "initial"
-    assert response["to"] == ["contact@1435.co.kr"]
-    assert response["subject"] == "AI 뉴스"
-    assert response["html"] == "<article>승인 HTML</article>"
-    assert response["text"] == "승인 본문"
+    assert response == {
+        "draft_id": "draft_1",
+        "email": "contact@1435.co.kr",
+        "frequency": "daily",
+        "request_text": "생성형 AI 뉴스를 정리해 주세요.",
+        "template": "<article>승인 HTML</article>",
+    }
+
+
+def test_scheduled_dispatch_inherits_parent_frequency_and_request(monkeypatch):
+    monkeypatch.setattr(ns.store, "get_draft", lambda draft_id: {
+        "id": draft_id,
+        "frequency": "weekly",
+        "_request_text": "로봇 산업 뉴스를 정리해 주세요.",
+    })
+
+    response = ns.NewsletterService.to_dispatch_response({
+        "id": "draft_child",
+        "schedule_parent_code": "draft_parent",
+        "user_email": "contact@1435.co.kr",
+        "approved_template": "<article>새 뉴스</article>",
+        "frequency": None,
+    })
+
+    assert response["draft_id"] == "draft_child"
+    assert response["frequency"] == "weekly"
+    assert response["request_text"] == "로봇 산업 뉴스를 정리해 주세요."

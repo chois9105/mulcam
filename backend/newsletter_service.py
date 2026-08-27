@@ -286,26 +286,25 @@ class NewsletterService:
 
     @staticmethod
     def to_dispatch_response(draft: Dict) -> Dict:
-        """n8n이 별도 가공 없이 메일 API에 넘길 수 있는 응답을 만든다."""
-        data = NewsletterService.to_response(draft)
-        email = draft.get("user_email") or DEFAULT_USER_EMAIL
+        """n8n 발송에 필요한 최소 정보만 돌려준다."""
         parent_id = draft.get("schedule_parent_code")
-        data.update({
-            "dispatch_id": draft.get("id"),
-            "schedule_id": parent_id or draft.get("id"),
-            "dispatch_type": "scheduled" if parent_id else "initial",
-            "dispatch_status": "pending",
-            "to": [email],
-            "recipient_email": email,
-            "subject": draft.get("title", "뉴스레터"),
-            "html": (
+        schedule = store.get_draft(parent_id) if parent_id else draft
+        schedule = schedule or draft
+        return {
+            "draft_id": draft.get("id"),
+            "email": draft.get("user_email") or DEFAULT_USER_EMAIL,
+            "frequency": schedule.get("frequency"),
+            "request_text": (
+                schedule.get("_request_text")
+                or draft.get("_request_text")
+                or ""
+            ),
+            "template": (
                 draft.get("approved_template")
                 or draft.get("article_html")
                 or ""
             ),
-            "text": draft.get("markdown") or "",
-        })
-        return data
+        }
 
     def prepare_dispatch(self, schedule: Dict) -> Dict:
         """승인된 요청으로 최신 뉴스를 만들고 n8n 발송 대기에 등록한다."""

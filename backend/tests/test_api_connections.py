@@ -48,11 +48,11 @@ class FakeService:
     @staticmethod
     def to_dispatch_response(draft):
         return {
-            **draft,
-            "dispatch_id": draft["id"],
-            "to": [draft["user_email"]],
-            "subject": draft["title"],
-            "html": draft["approved_template"],
+            "draft_id": draft["id"],
+            "email": draft["user_email"],
+            "frequency": "daily",
+            "request_text": "AI 뉴스",
+            "template": draft["approved_template"],
         }
 
     def record_dispatch_result(self, draft_id, sent, error):
@@ -107,10 +107,12 @@ def test_primary_newsletter_endpoints_are_connected(monkeypatch):
     assert approved.json()["status"] == "approved"
     assert collected.json()["collected"] == 3
     assert pending_dispatches.json()["count"] == 1
-    assert pending_dispatches.json()["dispatches"][0]["to"] == [
-        "contact@1435.co.kr"
-    ]
-    assert pending_dispatches.json()["dispatches"][0]["html"] == (
+    dispatch = pending_dispatches.json()["dispatches"][0]
+    assert set(dispatch) == {
+        "draft_id", "email", "frequency", "request_text", "template"
+    }
+    assert dispatch["email"] == "contact@1435.co.kr"
+    assert dispatch["template"] == (
         "<article>본문</article>"
     )
     assert ("dispatch_result", "draft_dispatch", True, None) in service.calls

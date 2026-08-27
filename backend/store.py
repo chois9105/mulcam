@@ -256,12 +256,13 @@ def mark_dispatch_pending(draft_code: str, *, schedule_parent_code: str,
 
 
 def list_pending_dispatches() -> List[Dict]:
-    """정기 생성됐지만 아직 발송 완료되지 않은 뉴스레터를 조회한다."""
+    """최초 승인본과 정기 생성본 중 아직 발송되지 않은 건을 조회한다."""
     if _detect() == "memory":
         items = [
             d for d in _memory.values()
-            if d.get("schedule_parent_code")
-            and d.get("status") == "approved"
+            if d.get("status") == "approved"
+            and d.get("approved_at")
+            and d.get("user_email")
             and not d.get("sent_at")
         ]
         return sorted(items, key=lambda d: d["id"])
@@ -270,8 +271,9 @@ def list_pending_dispatches() -> List[Dict]:
     from db_models import Draft
     with session_scope() as s:
         rows = s.query(Draft).filter(
-            Draft.schedule_parent_code.isnot(None),
             Draft.status == "approved",
+            Draft.approved_at.isnot(None),
+            Draft.user_email.isnot(None),
             Draft.sent_at.is_(None),
         ).order_by(Draft.created_at.asc()).all()
         return [_from_row(r) for r in rows]

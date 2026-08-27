@@ -284,6 +284,29 @@ class NewsletterService:
     def pending_dispatches(self) -> List[Dict]:
         return store.list_pending_dispatches()
 
+    @staticmethod
+    def to_dispatch_response(draft: Dict) -> Dict:
+        """n8n이 별도 가공 없이 메일 API에 넘길 수 있는 응답을 만든다."""
+        data = NewsletterService.to_response(draft)
+        email = draft.get("user_email") or DEFAULT_USER_EMAIL
+        parent_id = draft.get("schedule_parent_code")
+        data.update({
+            "dispatch_id": draft.get("id"),
+            "schedule_id": parent_id or draft.get("id"),
+            "dispatch_type": "scheduled" if parent_id else "initial",
+            "dispatch_status": "pending",
+            "to": [email],
+            "recipient_email": email,
+            "subject": draft.get("title", "뉴스레터"),
+            "html": (
+                draft.get("approved_template")
+                or draft.get("article_html")
+                or ""
+            ),
+            "text": draft.get("markdown") or "",
+        })
+        return data
+
     def prepare_dispatch(self, schedule: Dict) -> Dict:
         """승인된 요청으로 최신 뉴스를 만들고 n8n 발송 대기에 등록한다."""
         draft = self.create(schedule["request_text"])
@@ -305,7 +328,13 @@ class NewsletterService:
     def record_dispatch_result(self, draft_id: str, *, sent: bool,
                                error: str | None = None) -> Dict:
         draft = store.get_draft(draft_id)
-        if not draft or not draft.get("schedule_parent_code"):
+        dispatchable = bool(
+            draft
+            and draft.get("status") in ("approved", "sent")
+            and draft.get("user_email")
+            and (draft.get("approved_template") or draft.get("article_html"))
+        )
+        if not dispatchable:
             raise ValueError("발송 대기 뉴스레터를 찾을 수 없습니다.")
         store.mark_sent(draft_id, error=None if sent else (error or "발송 실패"))
         return store.get_draft(draft_id)

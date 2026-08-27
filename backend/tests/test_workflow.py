@@ -149,3 +149,41 @@ def test_prepare_dispatch_registers_generated_newsletter_without_sending(monkeyp
         "user_email": "contact@1435.co.kr",
         "approved_template": "<article>새 뉴스</article>",
     }
+
+
+def test_initial_approved_draft_can_record_dispatch_result(monkeypatch):
+    service = ns.NewsletterService()
+    approved = {
+        "id": "draft_parent", "status": "approved",
+        "frequency": "daily", "approved_at": "2026.08.27 10:00",
+        "user_email": "contact@1435.co.kr",
+        "approved_template": "<article>승인본</article>",
+    }
+    marked = {}
+    monkeypatch.setattr(ns.store, "get_draft", lambda draft_id: {
+        **approved, "status": "sent" if marked else "approved"
+    })
+    monkeypatch.setattr(ns.store, "mark_sent",
+                        lambda draft_id, error=None: marked.update(
+                            draft_id=draft_id, error=error))
+
+    result = service.record_dispatch_result("draft_parent", sent=True)
+
+    assert marked == {"draft_id": "draft_parent", "error": None}
+    assert result["status"] == "sent"
+
+
+def test_dispatch_response_contains_n8n_mail_payload():
+    response = ns.NewsletterService.to_dispatch_response({
+        "id": "draft_1", "title": "AI 뉴스", "status": "approved",
+        "user_email": "contact@1435.co.kr", "frequency": "daily",
+        "approved_template": "<article>승인 HTML</article>",
+        "article_html": "<article>화면 HTML</article>",
+        "markdown": "승인 본문",
+    })
+
+    assert response["dispatch_type"] == "initial"
+    assert response["to"] == ["contact@1435.co.kr"]
+    assert response["subject"] == "AI 뉴스"
+    assert response["html"] == "<article>승인 HTML</article>"
+    assert response["text"] == "승인 본문"

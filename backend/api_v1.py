@@ -179,9 +179,12 @@ class DispatchResultRequest(BaseModel):
 
 @router.get("/dispatches/pending", summary="n8n용 미발송 뉴스레터 목록")
 async def list_pending_dispatches():
-    """정기 생성됐고 아직 발송 완료 기록이 없는 건만 돌려준다."""
+    """최초 승인 또는 정기 생성 후 아직 발송 완료되지 않은 건을 돌려준다."""
     try:
-        items = [service.to_response(d) for d in service.pending_dispatches()]
+        items = [
+            service.to_dispatch_response(d)
+            for d in service.pending_dispatches()
+        ]
         return {"count": len(items), "dispatches": items}
     except Exception as e:
         logger.exception("미발송 목록 조회 실패")

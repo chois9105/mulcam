@@ -41,8 +41,19 @@ class FakeService:
         return []
 
     def pending_dispatches(self):
-        return [{**self.draft, "id": "draft_dispatch",
-                 "status": "approved", "schedule_parent_code": "draft_1"}]
+        return [{**self.draft, "id": "draft_dispatch", "status": "approved",
+                 "user_email": "contact@1435.co.kr",
+                 "approved_template": "<article>본문</article>"}]
+
+    @staticmethod
+    def to_dispatch_response(draft):
+        return {
+            **draft,
+            "dispatch_id": draft["id"],
+            "to": [draft["user_email"]],
+            "subject": draft["title"],
+            "html": draft["approved_template"],
+        }
 
     def record_dispatch_result(self, draft_id, sent, error):
         self.calls.append(("dispatch_result", draft_id, sent, error))
@@ -96,6 +107,12 @@ def test_primary_newsletter_endpoints_are_connected(monkeypatch):
     assert approved.json()["status"] == "approved"
     assert collected.json()["collected"] == 3
     assert pending_dispatches.json()["count"] == 1
+    assert pending_dispatches.json()["dispatches"][0]["to"] == [
+        "contact@1435.co.kr"
+    ]
+    assert pending_dispatches.json()["dispatches"][0]["html"] == (
+        "<article>본문</article>"
+    )
     assert ("dispatch_result", "draft_dispatch", True, None) in service.calls
 
 
